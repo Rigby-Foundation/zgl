@@ -86,7 +86,7 @@ install-headers:
 install: all
 	@mkdir -p $(SYSROOT)/rootfs/bin $(SYSROOT)/usr/include/GL $(SYSROOT)/usr/lib
 	cp $(TOOLS) $(SYSROOT)/rootfs/bin/
-	cp include/virgl.h include/virgl_protocol.h include/virgl_hw.h include/p_defines.h $(SYSROOT)/usr/include/
+	cp include/virgl.h include/virgl_protocol.h include/virgl_hw.h include/p_defines.h include/adreno_hw.h $(SYSROOT)/usr/include/
 	cp include/GL/*.h $(SYSROOT)/usr/include/GL/ 2>/dev/null || true
 	cp $(VIRGL_LIB) $(GL_LIB) $(SYSROOT)/usr/lib/
 	@echo "installed into $(SYSROOT)"

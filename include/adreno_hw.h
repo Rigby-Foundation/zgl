@@ -2,7 +2,7 @@
 /* Copyright (C) 2026 Rigby Foundation */
 /* libadreno: a Qualcomm Adreno 6xx through sic's /dev/adrenogpu: buffers
  * the GPU sees at fixed addresses, and PM4 command streams the kernel runs
- * as indirect buffers. The 2D engine (blits, fills) is here too, after
+ * as indirect buffers. The 2D engine (fills, copies) is here too, after
  * Mesa's turnip (r2d_*). */
 #pragma once
 #include <stdint.h>
@@ -48,3 +48,12 @@ static inline int adreno_finish(struct adreno_hw *hw) { return adreno_wait(hw, a
  * the _screen forms take the screen's odd pitch). Colours are 0xAARRGGBB. */
 void adreno_2d_fill(struct adreno_hw *hw, uint64_t dst, uint32_t pitch, int x, int y, int w, int h, uint32_t argb);
 void adreno_2d_fill_screen(struct adreno_hw *hw, int x, int y, int w, int h, uint32_t argb);
+/* Copies (sx, sy, sw, sh) of src to (dx, dy, dw, dh) of dst, nearest
+ * neighbour where the sizes differ (no blending: the 2D engine has none). */
+void adreno_2d_copy(struct adreno_hw *hw, uint64_t src, uint32_t spitch, int sx, int sy, int sw, int sh,
+                    uint64_t dst, uint32_t dpitch, int dx, int dy, int dw, int dh);
+/* (sx, sy, w, h) of src to (dx, dy) of the screen, unscaled. */
+void adreno_2d_copy_to_screen(struct adreno_hw *hw, uint64_t src, uint32_t spitch, int sx, int sy, int w, int h, int dx, int dy);
+/* Before the GPU reads or partly overwrites what the CPU wrote: drop
+ * what its caches (the render backend's and UCHE) hold. */
+void adreno_invalidate(struct adreno_hw *hw);
