@@ -2,6 +2,8 @@
 /* Copyright (C) 2026 Rigby Foundation */
 /* /dev/gpu0 and the virgl command stream encoder. */
 #include "virgl.h"
+#include "r300/vrend.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -24,12 +26,33 @@ struct virgl {
      * synchronous round trip per draw */
     struct { virgl_res *r; uint32_t lo, hi; } dirty[4];
     int ndirty;
+    /* no virtio GPU, but an R300 IGP: the command stream runs here, on it */
+    struct r300_vrend *r3;
 };
+
+/* The R300 path: whenever the kernel offers /dev/radeongpu (ZGL_R300=0
+ * turns it off, to fall back to software GL). */
+static virgl *open_r300(void)
+{
+    const char *e = getenv("ZGL_R300");
+    if (e && *e == '0') return NULL;
+    struct r300_vrend *r3 = r300_vrend_open();
+    if (!r3) return NULL;
+    virgl *v = calloc(1, sizeof *v);
+    if (!v) { r300_vrend_close(r3); return NULL; }
+    v->fd = -1;
+    v->r3 = r3;
+    v->buf = malloc(GPU_SUBMIT_MAX);
+    v->next_handle = 1;
+    r300_vrend_caps(r3, &v->caps);
+    v->have_caps = 1;
+    return v;
+}
 
 virgl *virgl_open(void)
 {
     int fd = open("/dev/gpu0", O_RDWR);
-    if (fd < 0) return NULL;
+    if (fd < 0) return open_r300();
     virgl *v = calloc(1, sizeof *v);
     if (!v) { close(fd); return NULL; }
     v->fd = fd;
@@ -48,7 +71,8 @@ void virgl_close(virgl *v)
 {
     if (!v) return;
     virgl_flush(v);
-    close(v->fd);
+    if (v->r3) r300_vrend_close(v->r3);
+    else close(v->fd);
     free(v->buf);
     free(v);
 }
@@ -61,6 +85,16 @@ uint32_t virgl_handle(virgl *v) { return v->next_handle++; }
 
 virgl_res *virgl_res_create_ex(virgl *v, struct gpu_res_create *rc)
 {
+    if (v->r3) {
+        rc->id = r300_vrend_res_create(v->r3, rc);
+        if (!rc->id) return NULL;
+        virgl_res *r = calloc(1, sizeof *r);
+        if (!r) return NULL;
+        r->id = rc->id; r->target = rc->target; r->format = rc->format; r->bind = rc->bind;
+        r->width = rc->width; r->height = rc->height; r->depth = rc->depth; r->size = rc->size;
+        if (rc->size) r->map = calloc(1, rc->size);
+        return r;
+    }
     if (ioctl(v->fd, GPU_IOC_CREATE_RES, rc) != 0) return NULL;
     virgl_res *r = calloc(1, sizeof *r);
     if (!r) return NULL;
@@ -88,6 +122,13 @@ void virgl_res_destroy(virgl *v, virgl_res *r)
 {
     if (!r) return;
     virgl_flush(v);
+    if (v->r3) {
+        virgl_forget(v, r);
+        r300_vrend_res_destroy(v->r3, r->id);
+        free(r->map);
+        free(r);
+        return;
+    }
     if (r->map) munmap(r->map, r->size);
     virgl_forget(v, r);
     ioctl(v->fd, r->foreign ? GPU_IOC_DETACH_RES : GPU_IOC_DESTROY_RES, &r->id);
@@ -96,6 +137,15 @@ void virgl_res_destroy(virgl *v, virgl_res *r)
 
 virgl_res *virgl_res_attach(virgl *v, uint32_t id, uint32_t target, uint32_t format, uint32_t w, uint32_t h)
 {
+    if (v->r3) {                            /* the owner's buffer, opened here */
+        virgl_flush(v);
+        if (r300_vrend_res_attach(v->r3, id, w, h, format)) return NULL;
+        virgl_res *r = calloc(1, sizeof *r);
+        if (!r) return NULL;
+        r->id = id; r->target = target; r->format = format; r->width = w; r->height = h; r->depth = 1;
+        r->foreign = 1;
+        return r;
+    }
     virgl_flush(v);
     if (ioctl(v->fd, GPU_IOC_ATTACH_RES, &id) != 0) return NULL;
     virgl_res *r = calloc(1, sizeof *r);
@@ -107,6 +157,7 @@ virgl_res *virgl_res_attach(virgl *v, uint32_t id, uint32_t target, uint32_t for
 
 int virgl_scanout(virgl *v, virgl_res *r)
 {
+    if (v->r3) { virgl_flush(v); return r300_vrend_scanout(v->r3, r ? r->id : 0); }
     virgl_flush(v);
     struct gpu_scanout so = { r->id, 0, 0, r->width, r->height };
     return ioctl(v->fd, GPU_IOC_SET_SCANOUT, &so);
@@ -114,6 +165,7 @@ int virgl_scanout(virgl *v, virgl_res *r)
 
 int virgl_present(virgl *v, virgl_res *r, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 {
+    if (v->r3) { (void)r; virgl_flush(v); return r300_vrend_present(v->r3, x, y, w, h); }   /* a GPU copy onto the panel's buffer */
     virgl_flush_fenced(v);                  /* the frame must be visible outside our context */
     struct gpu_scanout so = { r->id, x, y, w, h };
     return ioctl(v->fd, GPU_IOC_FLUSH, &so);
@@ -123,6 +175,7 @@ static int transfer(virgl *v, virgl_res *r, int to_host, uint32_t level, uint32_
                     uint32_t w, uint32_t h, uint32_t d, uint32_t stride, uint32_t layer_stride, uint64_t offset)
 {
     virgl_flush(v);                     /* commands before the transfer must have run */
+    if (v->r3) return r300_vrend_transfer(v->r3, r->id, to_host, level, x, y, w, h, stride, r->map, offset);
     struct gpu_transfer t = { r->id, level, x, y, z, w, h, d, stride, layer_stride, offset };
     return ioctl(v->fd, to_host ? GPU_IOC_TRANSFER_TO_HOST : GPU_IOC_TRANSFER_FROM_HOST, &t);
 }
@@ -141,6 +194,7 @@ int virgl_res_from_host(virgl *v, virgl_res *r, uint32_t level, uint32_t x, uint
  * uploads the next submit's commands are waiting for). */
 static void upload(virgl *v, virgl_res *r, uint32_t lo, uint32_t hi)
 {
+    if (v->r3) { r300_vrend_transfer(v->r3, r->id, 1, 0, lo, 0, hi - lo, 1, 0, r->map, lo); return; }
     struct gpu_transfer t = { r->id, 0, lo, 0, 0, hi - lo, 1, 1, 0, 0, lo };
     ioctl(v->fd, GPU_IOC_TRANSFER_TO_HOST, &t);
 }
@@ -173,6 +227,12 @@ void virgl_forget(virgl *v, virgl_res *r)
 
 static int submit(virgl *v, uint32_t flags)
 {
+    if (v->r3) {
+        int rc = r300_vrend_submit(v->r3, v->buf, v->used);
+        v->used = 0;
+        if (flags & GPU_SUBMIT_FENCE) r300_vrend_finish(v->r3);
+        return rc;
+    }
     struct gpu_submit sb = { (uint64_t)(uintptr_t)v->buf, v->used * 4, flags };
     int rc = ioctl(v->fd, GPU_IOC_SUBMIT, &sb);
     v->used = 0;

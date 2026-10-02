@@ -39,7 +39,7 @@ IMAGE_BASE := 0x8000000000
 LD_EMUL :=
 endif
 
-CFLAGS  := --target=$(TARGET) -std=c11 -nostdinc -isystem $(LIBC)/include -Iinclude \
+CFLAGS  := --target=$(TARGET) -std=c11 -nostdinc -isystem $(LIBC)/include -Iinclude -Ilib \
            $(ARCH_CFLAGS) -fno-stack-protector -fno-asynchronous-unwind-tables \
            -O2 -g -Wall -Wextra -D_GNU_SOURCE
 LDFLAGS := $(LD_EMUL) -static -nostdlib --image-base=$(IMAGE_BASE) -z max-page-size=0x1000 -z noexecstack \
@@ -48,16 +48,18 @@ CRT_BEGIN := $(LIBC)/lib/crt1.o $(LIBC)/lib/crti.o
 CRT_END   := $(LIBC)/lib/crtn.o
 stamp-osabi = printf '\123' | dd of=$(1) bs=1 seek=7 count=1 conv=notrunc status=none
 
-VIRGL_OBJS := $(BUILD)/lib/virgl.o
+VIRGL_OBJS := $(BUILD)/lib/virgl.o $(patsubst lib/r300/%.c,$(BUILD)/lib/r300/%.o,$(wildcard lib/r300/*.c)) $(patsubst lib/adreno/%.c,$(BUILD)/lib/adreno/%.o,$(wildcard lib/adreno/*.c))
 VIRGL_LIB  := $(BUILD)/libvirgl.a
 GL_OBJS    := $(patsubst lib/gl/%.c,$(BUILD)/lib/gl/%.o,$(wildcard lib/gl/*.c))
 GL_LIB     := $(BUILD)/libzgl.a
+R300_OBJS  := $(patsubst lib/r300/%.c,$(BUILD)/lib/r300/%.o,$(wildcard lib/r300/*.c))
+R300_LIB   := $(BUILD)/libr300.a
 TOOLS      := $(patsubst tools/%.c,$(BUILD)/%,$(wildcard tools/*.c))
 
 .PHONY: all install install-headers clean
-all: $(VIRGL_LIB) $(GL_LIB) $(TOOLS)
+all: $(VIRGL_LIB) $(GL_LIB) $(R300_LIB) $(TOOLS)
 
-$(BUILD)/%.o: %.c $(wildcard include/*.h include/GL/*.h lib/gl/*.h)
+$(BUILD)/%.o: %.c $(wildcard include/*.h include/GL/*.h lib/gl/*.h lib/r300/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -67,8 +69,11 @@ $(VIRGL_LIB): $(VIRGL_OBJS)
 $(GL_LIB): $(GL_OBJS)
 	rm -f $@ && $(AR) rcs $@ $^
 
-$(BUILD)/%: $(BUILD)/tools/%.o $(VIRGL_LIB) $(GL_LIB)
-	$(LD) $(LDFLAGS) -o $@ $(CRT_BEGIN) $< $(GL_LIB) $(VIRGL_LIB) $(LIBC)/lib/libzwm.a $(LIBC)/lib/libc.a $(wildcard $(LIBC)/lib/libcompiler_rt.a) $(CRT_END)
+$(R300_LIB): $(R300_OBJS)
+	rm -f $@ && $(AR) rcs $@ $^
+
+$(BUILD)/%: $(BUILD)/tools/%.o $(VIRGL_LIB) $(GL_LIB) $(R300_LIB)
+	$(LD) $(LDFLAGS) -o $@ $(CRT_BEGIN) $< $(GL_LIB) $(VIRGL_LIB) $(R300_LIB) $(LIBC)/lib/libzwm.a $(LIBC)/lib/libc.a $(wildcard $(LIBC)/lib/libcompiler_rt.a) $(CRT_END)
 	@$(call stamp-osabi,$@)
 
 # Just the headers: the context ABI (GL/sic_gl.h) and the GL API TinyGL

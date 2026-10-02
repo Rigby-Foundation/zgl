@@ -6,6 +6,7 @@ programs into its `rootfs/` overlay.
 
 ```
 lib/virgl.c, include/virgl.h    libvirgl: /dev/gpu0 and the virgl command stream
+lib/r300/, include/r300_hw.h    the same stream run on an R300 IGP (/dev/radeongpu)
 lib/gl/                         libzgl: OpenGL 2.1 on top of it
 include/GL/gl.h                 the API; GL/sic_gl.h the context ABI for SDL
 tools/virgltri.c                a triangle through libvirgl alone
@@ -53,6 +54,18 @@ multisampling, 1D/3D textures, framebuffer objects, `glCopyTex*`.
 `GL_RENDERER` names the host GPU (`zgl on virgl (Apple M4)`). Big-endian
 guests (the PowerPC port) are out: the command stream and vertex data are
 little-endian and virglrenderer assumes as much.
+
+## On a Radeon IGP
+
+On R300-class IGPs without hardware vertex processing (Radeon Xpress
+200M/1100/1150, RS400/RS480; sic's `/dev/radeongpu`), libvirgl runs the
+command stream itself instead of sending it to a host: `lib/r300` is a
+small virglrenderer for the chip. Vertex shaders run on the CPU (a TGSI
+interpreter), then clipping and the viewport; fragment shaders are
+compiled to R300 fragment programs (64 ALU, 32 TEX, 4 indirections, no
+branches: IF/ELSE become selects, loops must unroll). Textures are
+B8G8R8A8, non-power-of-two ones without mipmaps or repeat. `ZGL_R300=0`
+falls back to software GL.
 
 ## Building
 

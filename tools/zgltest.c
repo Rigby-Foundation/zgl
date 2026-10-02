@@ -149,6 +149,7 @@ int main(void)
     mid = px[(H / 2) * stride + W / 2] & 0xFFFFFF;
     ok &= (mid >> 16) > 150;                                        /* the copy shows the red triangle too */
     printf("zgltest: glCopyTexSubImage2D %s\n", (mid >> 16) > 150 ? "ok" : "wrong");
+    sketch(px, stride);
 
     printf("zgltest: %s\n", ok ? "ok" : "FAILED");
     sic_gl_destroy(ctx);
