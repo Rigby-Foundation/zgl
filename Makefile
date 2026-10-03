@@ -56,7 +56,7 @@ R300_OBJS  := $(patsubst lib/r300/%.c,$(BUILD)/lib/r300/%.o,$(wildcard lib/r300/
 R300_LIB   := $(BUILD)/libr300.a
 TOOLS      := $(patsubst tools/%.c,$(BUILD)/%,$(wildcard tools/*.c))
 
-.PHONY: all install install-headers clean
+.PHONY: all install install-headers clean ir3
 all: $(VIRGL_LIB) $(GL_LIB) $(R300_LIB) $(TOOLS)
 
 $(BUILD)/%.o: %.c $(wildcard include/*.h include/GL/*.h lib/gl/*.h lib/r300/*.h)
@@ -90,6 +90,11 @@ install: all
 	cp include/GL/*.h $(SYSROOT)/usr/include/GL/ 2>/dev/null || true
 	cp $(VIRGL_LIB) $(GL_LIB) $(SYSROOT)/usr/lib/
 	@echo "installed into $(SYSROOT)"
+
+# Mesa's ir3 shader compiler for the Adreno (ir3/): not part of `all`, it
+# fetches Mesa's source and needs python3 with mako and pyyaml.
+ir3:
+	$(MAKE) -C ir3 install
 
 clean:
 	rm -rf build

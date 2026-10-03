@@ -67,6 +67,25 @@ branches: IF/ELSE become selects, loops must unroll). Textures are
 B8G8R8A8, non-power-of-two ones without mipmaps or repeat. `ZGL_R300=0`
 falls back to software GL.
 
+## On a phone's Adreno
+
+`lib/adreno` (libadreno, inside libvirgl) runs an Adreno 6xx through sic's
+`/dev/adrenogpu`: buffers, PM4 streams, fences and the 2D engine, which zwm
+composes the screen with. For 3D, `ir3/` builds Mesa's own shader compiler
+for the chip, ir3, with NIR and Gallium's TGSI front end (TGSI is what
+`lib/gl/glsl.c` emits): `libir3.a`, and `ir3c`, which compiles a TGSI shader
+into A6xx instructions and prints their disassembly. The sources are a
+pinned Mesa release (fetched once, its SHA-256 checked); the files Mesa
+generates come from its Python generators (`python3` with `mako` and
+`pyyaml`), except the assembler's flex/bison output in `ir3/gen/`.
+`make ir3` builds and installs it (not part of `make`).
+
+```bash
+make ir3                                  # build/mesa-<ver>, libir3.a, ir3c -> the sysroot
+make -C ir3 HOST=1                        # ir3c for this machine, to compare
+ir3c shader.tgsi out.bin
+```
+
 ## Building
 
 ```bash
