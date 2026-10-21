@@ -1,0 +1,12 @@
+# no #version: 1.10
+[fragment]
+uniform float k;
+void main() {
+  float a[3];
+  a[0] = 0.25; a[1] = 0.5; a[2] = k;
+  gl_FragColor = vec4(a[0] + a[1], a[2], float(int(2.7)) / 2.0, 1.0);
+}
+[uniforms]
+k 0.125
+[expect]
+all 0.75 0.125 1 1

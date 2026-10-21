@@ -1,0 +1,16 @@
+[vertex]
+#version 100
+attribute vec2 zgl_pos;
+varying vec2 uv;
+void main() { uv = zgl_pos * 0.5 + 0.5; gl_Position = vec4(zgl_pos, 0.0, 1.0); }
+[fragment]
+#version 100
+precision highp float;
+varying vec2 uv;
+uniform sampler2D s;
+void main() { gl_FragColor = texture2D(s, uv) + vec4(0.0, 0.0, 0.0, GL_ES == 1 ? 0.0 : 1.0); }
+[texture 0]
+2x2
+[expect]
+pixel 1 1 1 0 0 1
+pixel 6 6 1 1 1 1

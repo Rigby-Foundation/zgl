@@ -735,21 +735,35 @@ int zgl_link(struct zgl_program *p)
     p->vs_nconsts = p->vs->c.nconsts; p->fs_nconsts = p->fs->c.nconsts;
     memset(p->vs_consts, 0, sizeof p->vs_consts); memset(p->fs_consts, 0, sizeof p->fs_consts);
     p->consts_dirty = 1;
-    /* attribute locations: bound names first, gl_* built-ins fixed, the rest in order */
+    /* attribute locations: layout(location) and gl_* built-ins are fixed,
+     * glBindAttribLocation next, the rest in order; a matrix takes one
+     * location per column */
     uint32_t used = 0;
     p->attrib_mask = 0;
     for (int i = 0; i < p->vs->c.nattribs; i++) p->attrib_loc[i] = -1;
+    for (int pass = 0; pass < 3; pass++)
+        for (int i = 0; i < p->vs->c.nattribs; i++) {
+            const struct zgl_var *a = &p->vs->c.attribs[i];
+            int n = a->slots > 0 ? a->slots : 1;
+            uint32_t span = ((1u << n) - 1);
+            if (p->attrib_loc[i] >= 0) continue;
+            int loc = -1;
+            if (pass == 0) loc = a->location >= 0 ? a->location : a->builtin ? a->builtin - 1 : -1;
+            else if (pass == 1) { for (int k = 0; k < ZGL_MAX_ATTRIBS; k++) if (p->bound_attr[k][0] && strcmp(p->bound_attr[k], a->name) == 0) loc = k; }
+            else for (int k = 0; k + n <= ZGL_MAX_ATTRIBS; k++) if (!(used & (span << k))) { loc = k; break; }
+            if (loc < 0) { if (pass == 2) { snprintf(p->log, sizeof p->log, "too many attributes\n"); return -1; } continue; }
+            if (loc + n > ZGL_MAX_ATTRIBS) { snprintf(p->log, sizeof p->log, "attribute '%s': location %d out of range\n", a->name, loc); return -1; }
+            p->attrib_loc[i] = loc;
+            used |= span << loc;
+        }
+    p->nin = 0;
     for (int i = 0; i < p->vs->c.nattribs; i++) {
         const struct zgl_var *a = &p->vs->c.attribs[i];
-        if (a->builtin) { p->attrib_loc[i] = a->builtin - 1; used |= 1u << (a->builtin - 1); continue; }
-        for (int k = 0; k < ZGL_MAX_ATTRIBS; k++)
-            if (p->bound_attr[k][0] && strcmp(p->bound_attr[k], a->name) == 0) { p->attrib_loc[i] = k; used |= 1u << k; break; }
-    }
-    for (int i = 0; i < p->vs->c.nattribs; i++) {
-        if (p->attrib_loc[i] >= 0) continue;
-        for (int k = 0; k < ZGL_MAX_ATTRIBS; k++)
-            if (!(used & (1u << k))) { p->attrib_loc[i] = k; used |= 1u << k; break; }
-        if (p->attrib_loc[i] < 0) { snprintf(p->log, sizeof p->log, "too many attributes\n"); return -1; }
+        for (int c = 0; c < (a->slots > 0 ? a->slots : 1); c++)
+            if (a->slot + c < ZGL_MAX_ATTRIBS) {
+                p->in_loc[a->slot + c] = p->attrib_loc[i] + c;
+                if (a->slot + c + 1 > p->nin) p->nin = a->slot + c + 1;
+            }
     }
     p->attrib_mask = used;
     p->linked = 1;
@@ -824,21 +838,20 @@ GLint glGetUniformLocation(GLuint name, const GLchar *uname)
     return -1;
 }
 
-static int type_slots(enum zgl_type t) { return t == T_MAT2 ? 2 : t == T_MAT3 ? 3 : t == T_MAT4 ? 4 : 1; }
-
-/* Store `count` values (each `stride_floats` wide, one per vec4 slot) into the uniform's slots. */
-void zgl_uniform_set(struct zgl_program *p, int loc, const float *data, int count, int is_matrix_cols)
+void zgl_uniform_set(struct zgl_program *p, int loc, const void *data_, int count, int is_matrix_cols)
 {
+    const uint32_t *data = data_;
     int idx = loc & 0xFFFF, elem = loc >> 16;
     if (idx < 0 || idx >= p->nuniforms) { zgl_set_error(GL_INVALID_OPERATION); return; }
     struct zgl_uniform *u = &p->uniforms[idx];
-    int per = type_slots(u->type);                  /* vec4 slots per element */
-    int width = is_matrix_cols ? per : (u->type == T_FLOAT || u->type == T_INT || u->type == T_BOOL ? 1 : u->type == T_VEC2 || u->type == T_IVEC2 || u->type == T_BVEC2 ? 2 : u->type == T_VEC3 || u->type == T_IVEC3 || u->type == T_BVEC3 ? 3 : 4);
+    int per = zgl_type_slots(u->type);              /* vec4 slots (columns) per element */
+    int rows = zgl_type_vec(u->type);               /* components per slot */
+    int width = is_matrix_cols ? per * rows : rows; /* words per element in data */
     int max_elems = u->array ? u->array : 1;
     for (int e = 0; e < count && elem + e < max_elems; e++) {
         for (int col = 0; col < per; col++) {
-            const float *src = data + (size_t)e * (is_matrix_cols ? per * per : width) + (is_matrix_cols ? col * per : 0);
-            int n = is_matrix_cols ? per : width;
+            const uint32_t *src = data + (size_t)e * width + (is_matrix_cols ? col * rows : 0);
+            int n = rows;
             int slot = (elem + e) * per + col;
             if (u->vs_slot >= 0 && u->vs_slot + slot < ZGL_MAX_CONSTS) memcpy(&p->vs_consts[(u->vs_slot + slot) * 4], src, (size_t)n * 4);
             if (u->fs_slot >= 0 && u->fs_slot + slot < ZGL_MAX_CONSTS) memcpy(&p->fs_consts[(u->fs_slot + slot) * 4], src, (size_t)n * 4);
@@ -849,28 +862,50 @@ void zgl_uniform_set(struct zgl_program *p, int loc, const float *data, int coun
 
 static struct zgl_program *uniform_target(void) { return zgl->program; }
 
-void glUniform1f(GLint loc, GLfloat x) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; float v[4] = { x, 0, 0, 0 }; zgl_uniform_set(p, loc, v, 1, 0); }
-void glUniform2f(GLint loc, GLfloat x, GLfloat y) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; float v[4] = { x, y, 0, 0 }; zgl_uniform_set(p, loc, v, 1, 0); }
-void glUniform3f(GLint loc, GLfloat x, GLfloat y, GLfloat z) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; float v[4] = { x, y, z, 0 }; zgl_uniform_set(p, loc, v, 1, 0); }
-void glUniform4f(GLint loc, GLfloat x, GLfloat y, GLfloat z, GLfloat w) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; float v[4] = { x, y, z, w }; zgl_uniform_set(p, loc, v, 1, 0); }
-void glUniform1fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; zgl_uniform_set(p, loc, v, n, 0); }
-void glUniform2fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; zgl_uniform_set(p, loc, v, n, 0); }
-void glUniform3fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; zgl_uniform_set(p, loc, v, n, 0); }
-void glUniform4fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); struct zgl_program *p = uniform_target(); if (!p || loc < 0) return; zgl_uniform_set(p, loc, v, n, 0); }
-
-static void uniform_int(GLint loc, const GLint *iv, int width, int count)
+/* Values into the uniform's representation: floats stay floats, ints and
+ * uints are stored as themselves, bools as ~0/0 (what the compiled code
+ * compares against). */
+static void uniform_store(GLint loc, const void *vals, int is_int, int width, int count)
 {
     struct zgl_program *p = uniform_target();
     if (!p || loc < 0) return;
-    int idx = loc & 0xFFFF;
-    if (idx < p->nuniforms && (p->uniforms[idx].type == T_SAMPLER2D || p->uniforms[idx].type == T_SAMPLERCUBE)) {
-        p->uniforms[idx].sampler_unit = iv[0];
+    int idx = loc & 0xFFFF, elem = loc >> 16;
+    if (idx >= p->nuniforms) { zgl_set_error(GL_INVALID_OPERATION); return; }
+    struct zgl_uniform *u = &p->uniforms[idx];
+    if (zgl_type_is_sampler(u->type)) {
+        if (!is_int) { zgl_set_error(GL_INVALID_OPERATION); return; }
+        const GLint *iv = vals;
+        for (int e = 0; e < count && elem + e < 16; e++) u->sampler_units[elem + e] = iv[e];
+        u->sampler_unit = u->sampler_units[0];
         return;
     }
-    float f[64 * 4];
-    for (int i = 0; i < count * width && i < 256; i++) f[i] = (float)iv[i];
-    zgl_uniform_set(p, loc, f, count, 0);
+    if (zgl_type_vec(u->type) != width && !zgl_type_cols(u->type)) { zgl_set_error(GL_INVALID_OPERATION); return; }
+    uint32_t w[64 * 4];
+    enum zgl_type base = zgl_type_base(u->type);
+    for (int i = 0; i < count * width && i < 256; i++) {
+        uint32_t x; memcpy(&x, (const uint32_t *)vals + i, 4);
+        if (base == T_BOOL) {
+            float f; memcpy(&f, &x, 4);
+            w[i] = (is_int ? x != 0 : f != 0.0f) ? 0xFFFFFFFFu : 0;
+        } else if (base == T_FLOAT && is_int) {
+            float f = (float)(int32_t)x; memcpy(&w[i], &f, 4);
+        } else if ((base == T_INT || base == T_UINT) && !is_int) {
+            zgl_set_error(GL_INVALID_OPERATION); return;
+        } else w[i] = x;
+    }
+    zgl_uniform_set(p, loc, w, count, 0);
 }
+
+void glUniform1f(GLint loc, GLfloat x) { CTX(); float v[1] = { x }; uniform_store(loc, v, 0, 1, 1); }
+void glUniform2f(GLint loc, GLfloat x, GLfloat y) { CTX(); float v[2] = { x, y }; uniform_store(loc, v, 0, 2, 1); }
+void glUniform3f(GLint loc, GLfloat x, GLfloat y, GLfloat z) { CTX(); float v[3] = { x, y, z }; uniform_store(loc, v, 0, 3, 1); }
+void glUniform4f(GLint loc, GLfloat x, GLfloat y, GLfloat z, GLfloat w) { CTX(); float v[4] = { x, y, z, w }; uniform_store(loc, v, 0, 4, 1); }
+void glUniform1fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); uniform_store(loc, v, 0, 1, n); }
+void glUniform2fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); uniform_store(loc, v, 0, 2, n); }
+void glUniform3fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); uniform_store(loc, v, 0, 3, n); }
+void glUniform4fv(GLint loc, GLsizei n, const GLfloat *v) { CTX(); uniform_store(loc, v, 0, 4, n); }
+
+static void uniform_int(GLint loc, const GLint *iv, int width, int count) { uniform_store(loc, iv, 1, width, count); }
 void glUniform1i(GLint loc, GLint x) { CTX(); uniform_int(loc, &x, 1, 1); }
 void glUniform2i(GLint loc, GLint x, GLint y) { CTX(); GLint v[2] = { x, y }; uniform_int(loc, v, 2, 1); }
 void glUniform3i(GLint loc, GLint x, GLint y, GLint z) { CTX(); GLint v[3] = { x, y, z }; uniform_int(loc, v, 3, 1); }

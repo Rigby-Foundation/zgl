@@ -1,0 +1,7 @@
+[fragment]
+#version 330
+in vec2 uv;
+out vec4 o;
+void main() { o = vec4(dFdx(uv.x) * 8.0, abs(dFdy(uv.y)) * 8.0, fwidth(uv.x * 2.0) * 4.0, 1.0); }
+[expect]
+all 1 1 1 1

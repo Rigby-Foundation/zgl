@@ -1,0 +1,6 @@
+[fragment]
+#version 330
+out vec4 o;
+void main() { int i = 1.5; o = vec4(1.0); }
+[expect]
+fail cannot convert float to int

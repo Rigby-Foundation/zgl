@@ -1,0 +1,13 @@
+[vertex]
+#version 330
+layout(location = 0) in vec2 zgl_pos;
+out float vid;
+void main() { vid = float(gl_VertexID); gl_Position = vec4(zgl_pos, 0.0, 1.0); }
+[fragment]
+#version 330
+in float vid;
+out vec4 o;
+void main() { o = vec4(vid, 0.0, 0.0, 1.0); }
+[expect]
+pixel 0 0 0.1875 0 0 1
+pixel 7 7 2.8125 0 0 1

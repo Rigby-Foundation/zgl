@@ -1,0 +1,11 @@
+[fragment]
+#version 330
+out vec4 o;
+void main() {
+  bvec3 a = lessThan(vec3(1.0, 2.0, 3.0), vec3(2.0, 2.0, 2.0));   // T F F
+  bvec3 b = equal(ivec3(1, 2, 3), ivec3(1, 0, 3));              // T F T
+  bool x = any(a) && !all(b) && all(not(bvec2(false)));
+  o = vec4(x ? 1.0 : 0.0, a.x == b.x ? 1.0 : 0.0, float(b.z), float(greaterThanEqual(uvec2(3u, 1u), uvec2(3u, 2u)).x));
+}
+[expect]
+all 1 1 1 1

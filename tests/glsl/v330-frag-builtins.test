@@ -1,0 +1,9 @@
+[fragment]
+#version 330
+out vec4 o;
+void main() {
+  o = vec4(gl_FragCoord.x / 8.0, gl_FragCoord.y / 8.0, gl_FrontFacing ? 1.0 : 0.0, 1.0);
+}
+[expect]
+pixel 0 0 0.0625 0.0625 1 1
+pixel 5 2 0.6875 0.3125 1 1

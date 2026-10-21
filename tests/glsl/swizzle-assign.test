@@ -1,0 +1,13 @@
+[fragment]
+#version 330
+out vec4 o;
+void main() {
+  vec4 v = vec4(0.0, 0.1, 0.2, 0.3);
+  v.zx += vec2(0.5, 0.25);      // z = 0.7, x = 0.25
+  v.wy = v.xz;                  // w = 0.25, y = 0.7
+  vec3 t = v.zyx;
+  t.yz = t.zy;                  // t = (0.7, 0.25, 0.7)
+  o = vec4(v.x * 4.0, v.y / 0.7, t.y * 4.0, (t.x + t.z) / 1.4);
+}
+[expect]
+all 1 1 1 1

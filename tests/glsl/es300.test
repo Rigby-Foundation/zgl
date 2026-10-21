@@ -1,0 +1,19 @@
+[vertex]
+#version 300 es
+in vec2 zgl_pos;
+out highp vec2 uv;
+void main() { uv = zgl_pos * 0.5 + 0.5; gl_Position = vec4(zgl_pos, 0.0, 1.0); }
+[fragment]
+#version 300 es
+precision mediump float;
+in highp vec2 uv;
+layout(location = 0) out lowp vec4 color;
+void main() {
+#ifdef GL_ES
+  color = vec4(uv.x, 0.0, 1.0, 1.0);
+#else
+  color = vec4(0.0);
+#endif
+}
+[expect]
+pixel 3 0 0.4375 0 1 1

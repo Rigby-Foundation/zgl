@@ -1,0 +1,14 @@
+[fragment]
+#version 330
+uniform int i;
+out vec4 o;
+void main() {
+  vec4 v = vec4(0.1, 0.2, 0.3, 0.4);
+  float x = v[i];
+  v[i + 1] = 1.0;
+  o = vec4(x, v.w, v.z, 1.0);
+}
+[uniforms]
+i 2
+[expect]
+all 0.3 1 0.3 1

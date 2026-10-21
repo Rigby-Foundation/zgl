@@ -1,0 +1,15 @@
+[fragment]
+#version 330
+out vec4 o;
+int counter = 0;
+bool bump() { counter++; return true; }
+void main() {
+  bool a = false && bump();     // bump() must not run
+  bool b = true || bump();      // nor here
+  bool c = true && bump();      // runs once
+  float t = counter == 1 ? 1.0 : 0.0;
+  vec2 v = c ? vec2(1.0) : vec2(0.0);
+  o = vec4(t, v.x, a ? 0.0 : 1.0, b ? 1.0 : 0.0);
+}
+[expect]
+all 1 1 1 1

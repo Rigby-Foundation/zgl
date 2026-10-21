@@ -114,14 +114,18 @@ static void apply_state_objects(void)
     }
     /* rasterizer */
     union { float f; uint32_t u; } lw = { zgl->line_width }, ps = { zgl->point_size }, pof = { zgl->po_factor }, pou = { zgl->po_units };
-    uint64_t rkey = (uint64_t)zgl->cull << 60 | (uint64_t)(zgl->cull_mode & 0xF) << 56 | (uint64_t)(zgl->front_face == GL_CCW) << 55 |
+    /* the window's buffer is a scanout resource, which the host renders
+     * y-flipped (y_0_top): that turns the winding around, so the front face
+     * is the other one there (Mesa does the same); FBO textures are not flipped */
+    int front_ccw = (zgl->front_face == GL_CCW) ^ (zgl->fbo == NULL || zgl->fbo->tex == NULL);
+    uint64_t rkey = (uint64_t)zgl->cull << 60 | (uint64_t)(zgl->cull_mode & 0xF) << 56 | (uint64_t)front_ccw << 55 |
                     (uint64_t)(zgl->polygon_mode & 0xF) << 50 | (uint64_t)zgl->scissor << 49 | (uint64_t)(zgl->shade_model == GL_FLAT) << 48 |
                     (uint64_t)zgl->polygon_offset << 47 | (uint64_t)(lw.u >> 8) << 24 | (uint64_t)(ps.u >> 8) | (uint64_t)(pof.u ^ pou.u) << 8;
     if (rkey != zgl->rs_key || !zgl->h_rs) {
         uint32_t dw[VIRGL_OBJ_RS_SIZE - 1] = { 0 };
         uint32_t cull = !zgl->cull ? PIPE_FACE_NONE : zgl->cull_mode == GL_FRONT ? PIPE_FACE_FRONT : zgl->cull_mode == GL_FRONT_AND_BACK ? PIPE_FACE_FRONT_AND_BACK : PIPE_FACE_BACK;
         uint32_t fill = zgl->polygon_mode == GL_LINE ? PIPE_POLYGON_MODE_LINE : zgl->polygon_mode == GL_POINT ? PIPE_POLYGON_MODE_POINT : PIPE_POLYGON_MODE_FILL;
-        dw[0] = VIRGL_OBJ_RS_S0_DEPTH_CLIP(1) | VIRGL_OBJ_RS_S0_HALF_PIXEL_CENTER(1) | VIRGL_OBJ_RS_S0_FRONT_CCW(zgl->front_face == GL_CCW) |
+        dw[0] = VIRGL_OBJ_RS_S0_DEPTH_CLIP(1) | VIRGL_OBJ_RS_S0_HALF_PIXEL_CENTER(1) | VIRGL_OBJ_RS_S0_FRONT_CCW(front_ccw) |
                 VIRGL_OBJ_RS_S0_CULL_FACE(cull) | VIRGL_OBJ_RS_S0_FILL_FRONT(fill) | VIRGL_OBJ_RS_S0_FILL_BACK(fill) |
                 VIRGL_OBJ_RS_S0_SCISSOR(zgl->scissor) | VIRGL_OBJ_RS_S0_FLATSHADE(zgl->shade_model == GL_FLAT) |
                 VIRGL_OBJ_RS_S0_OFFSET_TRI(zgl->polygon_offset) | VIRGL_OBJ_RS_S0_POINT_SIZE_PER_VERTEX(0) | VIRGL_OBJ_RS_S0_LINE_LAST_PIXEL(0);
@@ -343,14 +347,14 @@ static void zgl_draw_inner(struct zgl_program *prog, uint32_t pmode, GLenum mode
     uint32_t vfirst = indexed ? (max_index == 0xFFFFFFFF ? 0 : min_index) : (uint32_t)first;
     uint32_t vcount = indexed ? (max_index == 0xFFFFFFFF ? 0 : max_index - min_index + 1) : (uint32_t)count;
 
-    /* vertex elements: VS input i comes from attribute location attrib_loc[i] */
-    int nel = prog->vs->c.nattribs;
+    /* vertex elements: VS input register i comes from location in_loc[i] */
+    int nel = prog->nin;
     uint32_t ve_off[ZGL_MAX_ATTRIBS], ve_buf[ZGL_MAX_ATTRIBS], ve_fmt[ZGL_MAX_ATTRIBS];
     uint32_t vb_stride[ZGL_MAX_ATTRIBS], vb_off[ZGL_MAX_ATTRIBS], vb_res[ZGL_MAX_ATTRIBS];
     uint64_t ve_key = 0;
     int nvb = 0;
     for (int i = 0; i < nel && i < ZGL_MAX_ATTRIBS; i++) {
-        int loc = prog->attrib_loc[i];
+        int loc = prog->in_loc[i];
         struct zgl_attrib *a = loc >= 0 ? &zgl->attribs[loc] : NULL;
         int elem_size = 0;
         if (a && a->enabled && (a->pointer != NULL || a->buffer) && a->size > 0) {
@@ -425,20 +429,29 @@ static void zgl_draw_inner(struct zgl_program *prog, uint32_t pmode, GLenum mode
         prog->consts_dirty = 0;
     }
 
-    /* textures: SAMP[i] of the fragment shader reads the unit its uniform names */
-    int ns = prog->fs->c.nsamplers;
-    if (ns > 0) {
+    /* textures: each SAMP[i] reads the unit its uniform (array element) names */
+    for (int stage = 0; stage < 2; stage++) {
+        const struct zgl_compiled *sc = stage ? &prog->fs->c : &prog->vs->c;
         uint32_t views[ZGL_MAX_VARS], samplers[ZGL_MAX_VARS];
-        for (int i = 0; i < ns; i++) {
-            int unit = 0;
-            for (int u = 0; u < prog->nuniforms; u++)
-                if (strcmp(prog->uniforms[u].name, prog->fs->c.samplers[i].name) == 0) { unit = prog->uniforms[u].sampler_unit; break; }
-            struct zgl_texture *t = unit >= 0 && unit < ZGL_MAX_UNITS ? zgl->unit_tex[unit] : NULL;
-            if (t && t->res && t->has_level0) { views[i] = zgl_texture_view(t); samplers[i] = zgl_texture_sampler(t); }
-            else { views[i] = 0; samplers[i] = 0; }
+        int ns = 0;
+        for (int i = 0; i < sc->nsamplers; i++) {
+            const struct zgl_var *sv = &sc->samplers[i];
+            const struct zgl_uniform *uu = NULL;
+            for (int u = 0; u < prog->nuniforms; u++) if (strcmp(prog->uniforms[u].name, sv->name) == 0) { uu = &prog->uniforms[u]; break; }
+            for (int e = 0; e < (sv->array ? sv->array : 1); e++) {
+                int s = sv->slot + e;
+                if (s >= ZGL_MAX_VARS) continue;
+                int unit = uu ? (e < 16 ? uu->sampler_units[e] : 0) : 0;
+                struct zgl_texture *t = unit >= 0 && unit < ZGL_MAX_UNITS ? zgl->unit_tex[unit] : NULL;
+                if (t && t->res && t->has_level0) { views[s] = zgl_texture_view(t); samplers[s] = zgl_texture_sampler(t); }
+                else { views[s] = 0; samplers[s] = 0; }
+                if (s + 1 > ns) ns = s + 1;
+            }
         }
-        virgl_set_sampler_views(zgl->v, PIPE_SHADER_FRAGMENT, 0, views, (uint32_t)ns);
-        virgl_bind_sampler_states(zgl->v, PIPE_SHADER_FRAGMENT, 0, samplers, (uint32_t)ns);
+        if (ns > 0) {
+            virgl_set_sampler_views(zgl->v, stage ? PIPE_SHADER_FRAGMENT : PIPE_SHADER_VERTEX, 0, views, (uint32_t)ns);
+            virgl_bind_sampler_states(zgl->v, stage ? PIPE_SHADER_FRAGMENT : PIPE_SHADER_VERTEX, 0, samplers, (uint32_t)ns);
+        }
     }
 
     if (indexed) virgl_set_index_buffer(zgl->v, ib_res, ib_size, ib_offset);

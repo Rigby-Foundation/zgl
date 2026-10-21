@@ -1,0 +1,4 @@
+[fragment]
+void f() {}
+[expect]
+fail no main

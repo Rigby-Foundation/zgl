@@ -1,0 +1,24 @@
+[vertex]
+#version 330
+layout(location = 0) in vec2 zgl_pos;
+layout(location = 3) in mat2 rot;
+uniform vec4 offsets[2];
+out vec4 col;
+void main() {
+  vec2 p = rot * zgl_pos;
+  col = vec4(offsets[gl_InstanceID].xyz + vec3(0.0, 0.0, abs(p.x) * 0.0), 1.0);
+  gl_PointSize = 4.0;
+  gl_Position = vec4(p, 0.0, 1.0);
+}
+[fragment]
+#version 330
+in vec4 col;
+out vec4 o;
+void main() { o = col; }
+[uniforms]
+offsets 0.25 0.5 0.75 0  0 0 0 0
+[attributes]
+zgl_pos quad
+rot 1 0 0 1
+[expect]
+all 0.25 0.5 0.75 1

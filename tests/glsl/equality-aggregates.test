@@ -1,0 +1,15 @@
+[fragment]
+#version 330
+struct P { vec2 a; int b; };
+out vec4 o;
+void main() {
+  P x = P(vec2(1.0, 2.0), 3);
+  P y = P(vec2(1.0, 2.0), 3);
+  P z = P(vec2(1.0, 2.5), 3);
+  float arr1[2] = float[2](1.0, 2.0);
+  float arr2[2] = float[2](1.0, 2.0);
+  mat2 m = mat2(1.0);
+  o = vec4(x == y ? 1.0 : 0.0, x != z ? 1.0 : 0.0, arr1 == arr2 ? 1.0 : 0.0, m == mat2(1.0) ? 1.0 : 0.0);
+}
+[expect]
+all 1 1 1 1

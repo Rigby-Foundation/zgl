@@ -1,0 +1,28 @@
+# ffp.c's fragment shader for GL_DECAL
+[vertex]
+varying vec4 vcol;
+varying vec2 uv;
+void main() {
+  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+  uv = (gl_TextureMatrix[0] * gl_MultiTexCoord0).st;
+  vcol = gl_Color;
+}
+[fragment]
+varying vec4 vcol;
+varying vec2 uv;
+uniform sampler2D tex0;
+void main() {
+  vec4 t = texture2D(tex0, uv);
+  gl_FragColor = vec4(mix(vcol.rgb, t.rgb, t.a), vcol.a);
+}
+[uniforms]
+gl_ModelViewProjectionMatrix 1 0 0 0  0 1 0 0  0 0 1 0  0 0 0 1
+gl_TextureMatrix 1 0 0 0  0 1 0 0  0 0 1 0  0 0 0 1
+[attributes]
+gl_Vertex quad
+gl_Color 0 0 1 0.5
+gl_MultiTexCoord0 0.25 0.25 0 1
+[texture 0]
+solid 1 0 0 0.25
+[expect]
+all 0.25 0 0.75 0.5

@@ -1,0 +1,18 @@
+[fragment]
+#version 330
+out vec4 o;
+float first_over(float t, float v[4]) {
+  for (int i = 0; i < 4; i++) if (v[i] > t) return v[i];
+  return -1.0;
+}
+void split(in vec2 v, out float a, inout float b) { a = v.x; b += v.y; }
+int pick(int x) { if (x < 0) return 0; return x * 2; }
+float pick(float x) { return x * 0.5; }
+void main() {
+  float v[4] = float[4](0.1, 0.3, 0.6, 0.9);
+  float a; float b = 0.25;
+  split(vec2(0.5, 0.25), a, b);
+  o = vec4(first_over(0.5, v) / 0.6, a + b, float(pick(-3) + pick(2)) / 4.0, pick(2.0));
+}
+[expect]
+all 1 1 1 1

@@ -1,0 +1,15 @@
+[fragment]
+#version 330
+out vec4 o;
+void main() {
+  int a = 17, b = -5;
+  uint u = 0xF0u;
+  int q = a / b;            // -3
+  int r = a % 5;            // 2
+  uint s = (u >> 4) | 1u;   // 15
+  int sh = 1 << 4;          // 16
+  int x = ~a & 0xFF;        // 238
+  o = vec4(float(q) / -3.0, float(r) / 2.0, float(s) / 15.0, float(sh + x) / 254.0);
+}
+[expect]
+all 1 1 1 1

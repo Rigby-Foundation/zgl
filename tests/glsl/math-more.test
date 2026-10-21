@@ -1,0 +1,12 @@
+[fragment]
+#version 330
+out vec4 o;
+void main() {
+  float a = sinh(1.0) / 1.17520119 + cosh(1.0) / 1.54308063 + tanh(0.5) / 0.46211716;   // 3
+  float b = exp(1.0) / 2.71828183 + log(2.71828183) + pow(2.0, 3.0) / 8.0;              // 3
+  float c = inversesqrt(4.0) * 2.0 + fract(2.25) * 4.0 + floor(-1.5) / -2.0;            // 1 + 1 + 1
+  float d = ceil(1.2) / 2.0 + trunc(-1.7) / -1.0 + round(2.5) / 2.0;                    // 1 + 1 + 1 (round half even: 2)
+  o = vec4(a / 3.0, b / 3.0, c / 3.0, d / 3.0);
+}
+[expect]
+all 1 1 1 1

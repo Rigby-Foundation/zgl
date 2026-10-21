@@ -24,8 +24,32 @@
 #define ZGL_ATTR_TEXCOORD 8
 
 /* ---- compiled shaders ---------------------------------------------------- */
+/* The types of interface variables (uniforms, attributes, varyings): what the
+ * GL layer needs to store and check values. The first 19 keep their old
+ * numbers. glsl_types.c has the table behind the helpers below. */
 enum zgl_type { T_VOID, T_FLOAT, T_INT, T_BOOL, T_VEC2, T_VEC3, T_VEC4, T_IVEC2, T_IVEC3, T_IVEC4,
-                T_BVEC2, T_BVEC3, T_BVEC4, T_MAT2, T_MAT3, T_MAT4, T_SAMPLER2D, T_SAMPLERCUBE, T_STRUCT };
+                T_BVEC2, T_BVEC3, T_BVEC4, T_MAT2, T_MAT3, T_MAT4, T_SAMPLER2D, T_SAMPLERCUBE, T_STRUCT,
+                T_UINT, T_UVEC2, T_UVEC3, T_UVEC4,
+                T_MAT2X3, T_MAT2X4, T_MAT3X2, T_MAT3X4, T_MAT4X2, T_MAT4X3,
+                T_SAMPLER1D, T_SAMPLER3D, T_SAMPLER2DRECT, T_SAMPLER1DARRAY, T_SAMPLER2DARRAY, T_SAMPLERBUFFER,
+                T_SAMPLER2DMS, T_SAMPLER2DMSARRAY, T_SAMPLERCUBEARRAY,
+                T_SAMPLER1DSHADOW, T_SAMPLER2DSHADOW, T_SAMPLERCUBESHADOW, T_SAMPLER2DRECTSHADOW,
+                T_SAMPLER1DARRAYSHADOW, T_SAMPLER2DARRAYSHADOW, T_SAMPLERCUBEARRAYSHADOW,
+                T_ISAMPLER1D, T_ISAMPLER2D, T_ISAMPLER3D, T_ISAMPLERCUBE, T_ISAMPLER2DRECT, T_ISAMPLER1DARRAY,
+                T_ISAMPLER2DARRAY, T_ISAMPLERBUFFER, T_ISAMPLER2DMS, T_ISAMPLER2DMSARRAY, T_ISAMPLERCUBEARRAY,
+                T_USAMPLER1D, T_USAMPLER2D, T_USAMPLER3D, T_USAMPLERCUBE, T_USAMPLER2DRECT, T_USAMPLER1DARRAY,
+                T_USAMPLER2DARRAY, T_USAMPLERBUFFER, T_USAMPLER2DMS, T_USAMPLER2DMSARRAY, T_USAMPLERCUBEARRAY,
+                T_TYPE_COUNT };
+
+/* the scalar type of t's components (T_FLOAT, T_INT, T_UINT, T_BOOL; for a
+ * sampler what it returns), its rows (1-4), its columns (0: not a matrix) */
+enum zgl_type zgl_type_base(enum zgl_type t);
+int  zgl_type_vec(enum zgl_type t);
+int  zgl_type_cols(enum zgl_type t);
+int  zgl_type_is_sampler(enum zgl_type t);
+int  zgl_type_slots(enum zgl_type t);       /* vec4 registers one value takes */
+const char *zgl_type_name(enum zgl_type t);
+const char *zgl_type_tgsi_target(enum zgl_type t);   /* samplers: "2D", "SHADOWCUBE", ... */
 
 #define ZGL_MAX_VARS 96
 struct zgl_var {                            /* an interface variable of a compiled shader */
@@ -35,6 +59,8 @@ struct zgl_var {                            /* an interface variable of a compil
     int  slot;                              /* attribute index / varying index / first vec4 constant / sampler unit */
     int  slots;                             /* vec4 slots taken (uniforms) */
     int  builtin;                           /* ZGL_STATE_* for the gl_* state uniforms, else 0 */
+    int  location;                          /* layout(location = n), -1 if none */
+    int  flat;                              /* varyings: integer or `flat` (no interpolation) */
 };
 
 struct zgl_compiled {
@@ -44,6 +70,8 @@ struct zgl_compiled {
     struct zgl_var uniforms[ZGL_MAX_VARS]; int nuniforms;    /* CONST slots */
     struct zgl_var samplers[ZGL_MAX_VARS]; int nsamplers;    /* SAMP index; slot = the unit set through the uniform */
     int nconsts;                            /* vec4 constants declared */
+    struct zgl_var outputs[8]; int noutputs;    /* FS: user `out` variables -> COLOR[slot] */
+    int version;                            /* the #version (110 if none) */
     int uses_frontcolor;                    /* varyings the compat built-ins declared */
 };
 
@@ -52,8 +80,10 @@ enum { ZGL_STATE_NONE, ZGL_STATE_MVP, ZGL_STATE_MV, ZGL_STATE_PROJ, ZGL_STATE_NO
        ZGL_STATE_LIGHT0 /* + n * 8 slots */, ZGL_STATE_MATERIAL_FRONT = 100, ZGL_STATE_LIGHTMODEL_AMBIENT,
        ZGL_STATE_TEXTURE0_MATRIX, ZGL_STATE_FOG };
 
-/* glsl.c: GLSL 1.20 (a subset) to TGSI text. type is GL_VERTEX_SHADER or
- * GL_FRAGMENT_SHADER. Returns 0 and fills *out, or -1 with the log. */
+/* glsl*.c: GLSL 1.10-3.30 (and ES 1.00/3.00) to TGSI text. type is
+ * GL_VERTEX_SHADER or GL_FRAGMENT_SHADER. Returns 0 and fills *out, or -1
+ * with the log. zgl_compile_linked compiles a fragment shader against the
+ * vertex shader's outputs (varying numbering). */
 int zgl_compile(const char *source, GLenum type, struct zgl_compiled *out, char *log, size_t logsize);
 int zgl_compile_linked(const char *source, GLenum type, const struct zgl_compiled *vs, struct zgl_compiled *out, char *log, size_t logsize);
 void zgl_compiled_free(struct zgl_compiled *c);
@@ -77,6 +107,7 @@ struct zgl_uniform {                        /* per program: where a uniform live
     int  slots;
     int  builtin;
     int  sampler_unit;                      /* for samplers: the texture unit (glUniform1i) */
+    int  sampler_units[16];                 /* ... one per element of a sampler array */
 };
 
 struct zgl_program {
@@ -86,7 +117,8 @@ struct zgl_program {
     char log[512];
     uint32_t h_vs, h_fs;                    /* virgl shader objects (0 = not created) */
     struct zgl_uniform uniforms[ZGL_MAX_VARS * 2]; int nuniforms;
-    int attrib_loc[ZGL_MAX_VARS];           /* VS attrib i -> location */
+    int attrib_loc[ZGL_MAX_VARS];           /* VS attrib i -> its (first) location */
+    int in_loc[ZGL_MAX_ATTRIBS]; int nin;   /* VS input register k -> the location feeding it */
     char bound_attr[ZGL_MAX_ATTRIBS][48];   /* glBindAttribLocation requests */
     float vs_consts[ZGL_MAX_CONSTS * 4], fs_consts[ZGL_MAX_CONSTS * 4];
     int vs_nconsts, fs_nconsts;
@@ -207,7 +239,9 @@ void zgl_ffp_bind_client_arrays(int enable);
 void zgl_draw(GLenum mode, GLint first, GLsizei count, GLenum index_type, const void *indices);   /* draw.c */
 void zgl_program_upload(struct zgl_program *p);
 int  zgl_link(struct zgl_program *p);
-void zgl_uniform_set(struct zgl_program *p, int loc, const float *data, int count, int is_matrix_cols);
+/* Store `count` elements of a uniform from `data`: 32-bit words already in the
+ * uniform's representation (floats, int/uint bits, bools as ~0/0). */
+void zgl_uniform_set(struct zgl_program *p, int loc, const void *data, int count, int is_matrix_cols);
 uint32_t zgl_texture_view(struct zgl_texture *t);
 uint32_t zgl_texture_sampler(struct zgl_texture *t);
 void zgl_flush_scratch(void);

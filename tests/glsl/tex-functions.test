@@ -1,0 +1,17 @@
+[fragment]
+#version 330
+uniform sampler2D s;
+in vec2 uv;
+out vec4 o;
+void main() {
+  ivec2 sz = textureSize(s, 0);
+  vec4 a = texture(s, vec2(0.25, 0.75));          // texel (0,1): blue
+  vec4 b = texelFetch(s, ivec2(1, 0), 0);         // green
+  vec4 c = textureLod(s, vec2(0.75, 0.75), 0.0);  // white
+  vec4 d = textureProj(s, vec3(0.5, 0.5, 2.0));   // (0.25, 0.25): red
+  o = vec4(float(sz.x + sz.y) / 4.0, a.b * b.g, c.r * c.g, d.r);
+}
+[texture 0]
+2x2
+[expect]
+all 1 1 1 1

@@ -1,0 +1,11 @@
+[fragment]
+#version 330
+in vec2 uv;
+out vec4 o;
+void main() {
+  if (uv.x < 0.5) discard;
+  o = vec4(1.0);
+}
+[expect]
+pixel 1 1 0.5 0.5 0.5 0.5
+pixel 6 1 1 1 1 1

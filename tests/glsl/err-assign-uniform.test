@@ -1,0 +1,7 @@
+[fragment]
+#version 330
+uniform float u;
+out vec4 o;
+void main() { u = 1.0; o = vec4(u); }
+[expect]
+fail not a variable

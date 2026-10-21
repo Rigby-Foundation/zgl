@@ -1,0 +1,17 @@
+[fragment]
+#version 330
+uniform int a, b;
+out vec4 o;
+void main() {
+  int q = a / b;          // -7 / 2 = -3 (truncation)
+  int r = a % b;          // -1
+  uint ub = uint(b);
+  uint big = 0x80000000u >> 31u;     // 1
+  int ashr = a >> 1;                 // arithmetic: -4
+  o = vec4(float(q) / -3.0, float(r) / -1.0, float(big + ub) / 3.0, float(ashr) / -4.0);
+}
+[uniforms]
+a -7
+b 2
+[expect]
+all 1 1 1 1

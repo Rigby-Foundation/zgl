@@ -1,0 +1,13 @@
+[fragment]
+#version 330
+uniform uint big;
+out vec4 o;
+void main() {
+  uint a = big + 2u;               // wraps to 1
+  int neg = int(0xFFFFFFFFu);      // -1
+  o = vec4(float(a), float(-neg), big > 1u ? 1.0 : 0.0, float(uint(-1) == 0xFFFFFFFFu));
+}
+[uniforms]
+big 4294967295
+[expect]
+all 1 1 1 1

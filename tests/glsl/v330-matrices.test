@@ -1,0 +1,19 @@
+[fragment]
+#version 330
+uniform mat3 m;
+out vec4 o;
+void main() {
+  vec3 a = m * vec3(1.0, 2.0, 3.0);         // columns: (1,0,0) (0,2,0) (1,0,1) -> (4, 4, 3)
+  vec3 b = vec3(1.0, 2.0, 3.0) * m;         // rows: dot with columns -> (1, 4, 4)
+  mat3 t = transpose(m);
+  mat3 p = m * t;
+  mat2x3 r = mat2x3(m[0], m[1]);
+  float d = determinant(m);                 // 2
+  mat3 inv = inverse(m);
+  vec3 back = inv * a;                      // (1, 2, 3)
+  o = vec4(a.x / 4.0 + b.x - 1.0, (p[0][0] + r[1][1]) / 4.0, d / 2.0, (back.x + back.y + back.z) / 6.0);
+}
+[uniforms]
+m 1 0 0  0 2 0  1 0 1
+[expect]
+all 1 1 1 1

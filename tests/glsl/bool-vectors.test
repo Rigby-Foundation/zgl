@@ -1,0 +1,13 @@
+[fragment]
+#version 330
+uniform bvec3 flags;
+out vec4 o;
+void main() {
+  bvec3 n = not(flags);
+  bvec2 sw = flags.zx;
+  o = vec4(float(flags.x), float(n.y), float(sw.x), float(any(bvec2(false, true)) && all(bvec2(true))));
+}
+[uniforms]
+flags 1 0 1
+[expect]
+all 1 1 1 1

@@ -1,0 +1,25 @@
+[fragment]
+#version 330
+uniform int n;
+out vec4 o;
+int find(int target) {
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      if (i * 4 + j == target) return i * 10 + j;
+    }
+  }
+  return -1;
+}
+float classify(float x) {
+  if (x < 0.0) return 0.0;
+  else if (x < 1.0) return 0.5;
+  return 1.0;
+}
+int outer(int t) { int r = find(t); if (r < 0) return 99; return r + find(1); }
+void main() {
+  o = vec4(float(find(n)) / 21.0, classify(-1.0) + classify(0.5) + classify(3.0) - 0.5, float(find(100)) / -1.0, float(outer(n)) / 22.0);
+}
+[uniforms]
+n 9
+[expect]
+all 1 1 1 1

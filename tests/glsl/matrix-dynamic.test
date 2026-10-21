@@ -1,0 +1,17 @@
+[fragment]
+#version 330
+uniform int i, j;
+uniform mat3 um;
+out vec4 o;
+void main() {
+  mat3 m = mat3(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0);
+  m[i][j] = 10.0;                   // m[1][2] = 10
+  vec3 c = m[i];
+  o = vec4(c.z / 10.0, m[j][i] / 8.0, um[i][j] / 6.0, c.x / 4.0);
+}
+[uniforms]
+i 1
+j 2
+um 1 2 3  4 5 6  7 8 9
+[expect]
+all 1 1 1 1

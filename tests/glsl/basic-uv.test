@@ -1,0 +1,8 @@
+# the default vertex shader's uv reaches the fragment shader
+[fragment]
+varying vec2 uv;
+void main() { gl_FragColor = vec4(uv, 0.0, 1.0); }
+[expect]
+pixel 0 0 0.0625 0.0625 0 1
+pixel 7 7 0.9375 0.9375 0 1
+pixel 3 5 0.4375 0.6875 0 1

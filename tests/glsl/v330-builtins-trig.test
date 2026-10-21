@@ -1,0 +1,12 @@
+[fragment]
+#version 330
+out vec4 o;
+void main() {
+  float a = atan(1.0, 1.0);             // pi/4
+  float b = asin(0.5);                  // pi/6
+  float c = acos(0.0);                  // pi/2
+  float d = atan(-2.0, -2.0);           // -3pi/4
+  o = vec4(a * 4.0 / 3.14159265, b * 6.0 / 3.14159265, c * 2.0 / 3.14159265, d / (-0.75 * 3.14159265));
+}
+[expect]
+all 1 1 1 1

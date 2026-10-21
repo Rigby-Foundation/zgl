@@ -1,0 +1,12 @@
+[vertex]
+#version 330
+layout(location = 0) in vec2 zgl_pos;
+flat out int tag;
+void main() { tag = 3; gl_Position = vec4(zgl_pos, 0.0, 1.0); }
+[fragment]
+#version 330
+flat in int tag;
+out vec4 o;
+void main() { o = vec4(float(tag) / 3.0, 0.0, 0.0, 1.0); }
+[expect]
+all 1 0 0 1

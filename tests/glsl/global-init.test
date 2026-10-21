@@ -1,0 +1,12 @@
+[fragment]
+#version 330
+uniform float u;
+float g = u * 2.0;
+float h = g + 0.25;
+const vec2 c2 = vec2(0.5) * 2.0;
+out vec4 o;
+void main() { g += 0.5; o = vec4(g, h, c2.x, c2.y); }
+[uniforms]
+u 0.25
+[expect]
+all 1 0.75 1 1

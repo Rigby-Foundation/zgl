@@ -1,0 +1,8 @@
+[fragment]
+#version 120
+uniform int which;
+void main() { gl_FragData[0] = vec4(0.5, 0.25, 1.0, 1.0); gl_FragData[which] = vec4(0.0, 0.0, 0.0, 1.0); }
+[uniforms]
+which 1
+[expect]
+all 0.5 0.25 1 1

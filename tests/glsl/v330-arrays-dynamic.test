@@ -1,0 +1,16 @@
+[fragment]
+#version 330
+uniform float table[4];
+uniform int pick;
+out vec4 o;
+void main() {
+  float local[5];
+  for (int i = 0; i < 5; i++) local[i] = float(i) * 0.25;
+  int k = pick + 1;
+  o = vec4(table[pick], local[k], local[k + 1] - local[k], float(local.length()) / 5.0);
+}
+[uniforms]
+table 0.1 0.2 0.3 0.4
+pick 2
+[expect]
+all 0.3 0.75 0.25 1

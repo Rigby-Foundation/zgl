@@ -1,0 +1,17 @@
+[fragment]
+#version 330
+uniform int n;
+uniform uint m;
+uniform ivec2 iv;
+uniform bool flag;
+out vec4 o;
+void main() {
+  o = vec4(float(n * 2) / 10.0, float(m + 1u) / 8.0, float(iv.x - iv.y) / 4.0, flag ? 1.0 : 0.0);
+}
+[uniforms]
+n 5
+m 3
+iv 7 3
+flag 1
+[expect]
+all 1 0.5 1 1

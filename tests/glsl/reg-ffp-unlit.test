@@ -1,0 +1,22 @@
+# ffp.c's program with lighting and texturing off
+[vertex]
+varying vec4 vcol;
+varying vec2 uv;
+void main() {
+  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;
+  uv = vec2(0.0);
+  vcol = gl_Color;
+}
+[fragment]
+varying vec4 vcol;
+varying vec2 uv;
+void main() {
+  gl_FragColor = vcol;
+}
+[uniforms]
+gl_ModelViewProjectionMatrix 1 0 0 0  0 1 0 0  0 0 1 0  0 0 0 1
+[attributes]
+gl_Vertex quad
+gl_Color 0.25 0.5 0.75 1
+[expect]
+all 0.25 0.5 0.75 1

@@ -1,0 +1,25 @@
+[fragment]
+#version 330
+struct Light { vec3 color; float power; };
+struct Scene { Light lights[2]; int count; };
+uniform Light key;
+uniform Scene scene;
+out vec4 o;
+Light dim(Light l) { l.power *= 0.5; return l; }
+void main() {
+  Light d = dim(key);
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < scene.count; i++) acc += scene.lights[i].color * scene.lights[i].power;
+  Light c = Light(vec3(1.0), 0.25);
+  o = vec4(d.color.r * d.power, acc.g, c.power, scene.lights[1].power);
+}
+[uniforms]
+key.color 1 0 0
+key.power 0.5
+scene.lights[0].color 0 1 0
+scene.lights[0].power 0.25
+scene.lights[1].color 0 1 0
+scene.lights[1].power 0.5
+scene.count 2
+[expect]
+all 0.25 0.75 0.25 0.5

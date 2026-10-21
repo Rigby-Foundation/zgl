@@ -1,0 +1,26 @@
+[fragment]
+#version 330
+uniform int sel[4];
+out vec4 o;
+float f(int v) {
+  float r = 0.0;
+  switch (v) {
+  case 0: r = 0.25; break;
+  case 1:
+  case 2: r += 0.5;            // 1 and 2 fall through to 3
+  case 3: r += 0.25; break;
+  default: r = 1.0;
+  }
+  return r;
+}
+void main() {
+  int hits = 0;
+  for (int i = 0; i < 4; i++) {
+    switch (sel[i]) { case 7: continue; default: hits++; }
+  }
+  o = vec4(f(sel[0]) + f(sel[1]), f(sel[2]), f(9), float(hits) / 2.0);
+}
+[uniforms]
+sel 0 2 7 7
+[expect]
+pixel 4 4 1 1 1 1

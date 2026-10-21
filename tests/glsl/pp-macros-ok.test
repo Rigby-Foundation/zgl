@@ -1,0 +1,25 @@
+[fragment]
+#version 330
+#define ONE 1.0
+#define HALF (ONE / 2.0)
+#define SQ(x) ((x) * (x))
+#define CAT(a, b) a##b
+#define MULTI(a, \
+              b) (a + b)
+#if defined(ONE) && __VERSION__ >= 330
+  #define OK 1
+#elif 0
+  #error should not happen
+#else
+  #define OK 0
+#endif
+#ifndef MISSING
+  #define ALSO 1
+#endif
+out vec4 o;
+void main() {
+  float CAT(va, lue) = SQ(HALF + 0.5);
+  o = vec4(float(OK) * value, float(ALSO), MULTI(0.25, 0.75), 1.0);
+}
+[expect]
+all 1 1 1 1

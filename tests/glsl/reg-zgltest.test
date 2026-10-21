@@ -1,0 +1,19 @@
+# tools/zgltest.c's GLSL program: VBO quad, texture, uniforms
+[vertex]
+attribute vec2 pos; attribute vec2 tc; varying vec2 uv; uniform float scale;
+void main() { gl_Position = vec4(pos * scale, 0.0, 1.0); uv = pos * 0.5 + 0.5; }
+[fragment]
+uniform sampler2D tex; varying vec2 uv; uniform vec4 tint;
+void main() { gl_FragColor = texture2D(tex, uv) * tint; }
+[uniforms]
+scale 1.0
+tint 1 0.5 1 1
+[attributes]
+pos quad
+[texture 0]
+2x2
+[expect]
+pixel 0 0 1 0 0 1
+pixel 7 0 0 0.5 0 1
+pixel 0 7 0 0 1 1
+pixel 7 7 1 0.5 1 1
