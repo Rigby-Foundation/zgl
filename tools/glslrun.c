@@ -289,6 +289,7 @@ static int run(sic_gl_context *ctx, const struct test *t, char *why, size_t whys
     GLenum err = glGetError();
     int fail = 0;
     if (err) { snprintf(why, whysz, "GL error 0x%x", err); fail = 1; }
+    if (!px && !fail) { snprintf(why, whysz, "no frame (the host failed the draw)"); fail = 1; }
     for (int i = 0; i < t->nexpect && !fail; i++) {
         float e[4]; int x0 = 0, y0 = 0, x1 = W, y1 = H;
         if (!strncmp(t->expect[i], "all", 3)) sscanf(t->expect[i] + 3, "%f %f %f %f", &e[0], &e[1], &e[2], &e[3]);

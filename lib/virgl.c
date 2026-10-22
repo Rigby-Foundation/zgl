@@ -10,6 +10,9 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#ifdef ZGL_VHOST            /* the host build: the same code on virglrenderer in-process */
+#include "vhost.h"
+#endif
 
 #define CMDBUF_DWORDS (GPU_SUBMIT_MAX / 4)
 
