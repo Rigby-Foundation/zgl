@@ -158,9 +158,12 @@ static void set_uniform(GLuint prog, const char *line)
     if (zgl_type_is_sampler(t)) { glUniform1iv(loc, n, iv); return; }
     if (cols) {
         int per = cols * rows;
-        if (cols == 2 && rows == 2) glUniformMatrix2fv(loc, n / per, GL_FALSE, v);
-        else if (cols == 3 && rows == 3) glUniformMatrix3fv(loc, n / per, GL_FALSE, v);
-        else if (cols == 4 && rows == 4) glUniformMatrix4fv(loc, n / per, GL_FALSE, v);
+        void (*set[5][5])(GLint, GLsizei, GLboolean, const GLfloat *) = {
+            [2][2] = glUniformMatrix2fv, [3][3] = glUniformMatrix3fv, [4][4] = glUniformMatrix4fv,
+            [2][3] = glUniformMatrix2x3fv, [3][2] = glUniformMatrix3x2fv, [2][4] = glUniformMatrix2x4fv,
+            [4][2] = glUniformMatrix4x2fv, [3][4] = glUniformMatrix3x4fv, [4][3] = glUniformMatrix4x3fv,
+        };
+        if (set[cols][rows]) set[cols][rows](loc, n / per, GL_FALSE, v);
         return;
     }
     int count = n / rows;
@@ -172,7 +175,11 @@ static void set_uniform(GLuint prog, const char *line)
         for (int e = 0; e < count; e++) {
             GLint *q = iv + e * rows;
             GLint el = idx | ((elem + e) << 16);
-            if (rows == 1) glUniform1i(el, q[0]); else if (rows == 2) glUniform2i(el, q[0], q[1]);
+            if (b == T_UINT) {
+                const GLuint *u = (const GLuint *)q;
+                if (rows == 1) glUniform1ui(el, u[0]); else if (rows == 2) glUniform2ui(el, u[0], u[1]);
+                else if (rows == 3) glUniform3ui(el, u[0], u[1], u[2]); else glUniform4ui(el, u[0], u[1], u[2], u[3]);
+            } else if (rows == 1) glUniform1i(el, q[0]); else if (rows == 2) glUniform2i(el, q[0], q[1]);
             else if (rows == 3) glUniform3i(el, q[0], q[1], q[2]); else glUniform4i(el, q[0], q[1], q[2], q[3]);
         }
     }

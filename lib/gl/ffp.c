@@ -226,15 +226,16 @@ void glEnd(void)
     int sizes[4] = { 4, 4, 3, 2 };
     int offs[4] = { 0, 4, 8, 11 };
     for (int i = 0; i < 4; i++) {
-        saved[i] = zgl->attribs[locs[i]];
-        struct zgl_attrib *a = &zgl->attribs[locs[i]];
+        saved[i] = ZGL_ATTRIBS[locs[i]];
+        struct zgl_attrib *a = &ZGL_ATTRIBS[locs[i]];
         a->enabled = 1; a->size = sizes[i]; a->type = GL_FLOAT; a->normalized = 0;
         a->stride = IMM_STRIDE * 4; a->pointer = zgl->imm + offs[i]; a->buffer = NULL;
+        a->integer = 0; a->divisor = 0;
     }
     zgl->imm_draw = 1;
     zgl_draw(zgl->imm_mode, 0, zgl->imm_n, 0, NULL);
     zgl->imm_draw = 0;
-    for (int i = 0; i < 4; i++) zgl->attribs[locs[i]] = saved[i];
+    for (int i = 0; i < 4; i++) ZGL_ATTRIBS[locs[i]] = saved[i];
 }
 
 /* ---- client arrays (compat) ------------------------------------------------------ */
@@ -272,21 +273,27 @@ void glTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *p)
 void zgl_ffp_bind_client_arrays(int enable)
 {
     static struct zgl_attrib saved[4];
+    static __typeof__(zgl->cur_attrib[0]) saved_cur[4];
     int locs[4] = { ZGL_ATTR_VERTEX, ZGL_ATTR_NORMAL, ZGL_ATTR_COLOR, ZGL_ATTR_TEXCOORD };
     void *arrs[4] = { &zgl->cl_vertex, &zgl->cl_normal, &zgl->cl_color, &zgl->cl_texcoord };
-    if (!enable) { for (int i = 0; i < 4; i++) zgl->attribs[locs[i]] = saved[i]; return; }
+    if (!enable) { for (int i = 0; i < 4; i++) { ZGL_ATTRIBS[locs[i]] = saved[i]; zgl->cur_attrib[locs[i]] = saved_cur[i]; } return; }
     for (int i = 0; i < 4; i++) {
         struct { int enabled; int size; GLenum type; int stride; const void *p; struct zgl_buffer *buffer; } *cl = arrs[i];
-        saved[i] = zgl->attribs[locs[i]];
-        struct zgl_attrib *a = &zgl->attribs[locs[i]];
+        saved[i] = ZGL_ATTRIBS[locs[i]];
+        saved_cur[i] = zgl->cur_attrib[locs[i]];
+        struct zgl_attrib *a = &ZGL_ATTRIBS[locs[i]];
         if (!cl->enabled) {
+            /* the current normal, colour, texture coordinate: the attribute's constant */
             a->enabled = 0;
-            if (i == 1) memcpy(a->value, zgl->cur_normal, 12);
-            else if (i == 2) memcpy(a->value, zgl->cur_color, 16);
-            else if (i == 3) memcpy(a->value, zgl->cur_texcoord, 16);
+            float *cv = zgl->cur_attrib[locs[i]].v.f;
+            zgl->cur_attrib[locs[i]].type = GL_FLOAT;
+            if (i == 1) { memcpy(cv, zgl->cur_normal, 12); cv[3] = 1; }
+            else if (i == 2) memcpy(cv, zgl->cur_color, 16);
+            else if (i == 3) memcpy(cv, zgl->cur_texcoord, 16);
             continue;
         }
         a->enabled = 1; a->size = cl->size; a->type = cl->type; a->stride = cl->stride; a->pointer = cl->p; a->buffer = cl->buffer;
+        a->integer = 0; a->divisor = 0;
         a->normalized = cl->type == GL_UNSIGNED_BYTE || cl->type == GL_UNSIGNED_SHORT;
     }
 }
@@ -357,7 +364,7 @@ struct zgl_program *zgl_ffp_program(void)
 {
     int lights = 0;
     for (int i = 0; i < ZGL_MAX_LIGHTS; i++) if (zgl->lights[i].enabled) lights |= 1 << i;
-    int texture = zgl->texture_2d[0] && zgl->unit_tex[0] && zgl->unit_tex[0]->res;
+    int texture = zgl->texture_2d[0] && zgl->unit_tex[0][ZT_2D] && zgl->unit_tex[0][ZT_2D]->res;
     int env = zgl->unit_env[0] == GL_REPLACE ? 1 : zgl->unit_env[0] == GL_DECAL ? 2 : 0;
     int key = (zgl->lighting ? 1 : 0) | (texture ? 2 : 0) | (zgl->lighting && zgl->color_material ? 4 : 0) | (zgl->lighting ? lights << 4 : 0) | env << 12;
     for (int i = 0; i < nffp; i++) if (ffp_cache[i].key == key) return ffp_cache[i].prog;

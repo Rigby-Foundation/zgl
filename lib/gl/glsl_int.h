@@ -111,6 +111,7 @@ struct gdecl {
     struct fdecl *fn;
     struct tspec *ts;           /* G_STRUCT, G_BLOCK (the block's members) */
     const char *block_name, *instance; int quals;
+    int binding, row_major;     /* G_BLOCK: layout(binding = n) (-1 if none), a row_major qualifier anywhere in it */
 };
 
 /* glsl_parse.c: c->toks -> c->decls */
@@ -128,6 +129,8 @@ struct glc {
     int es;
     struct zgl_compiled *out;
     const struct zgl_compiled *vs;
+    const char (*frag_loc)[48];  /* glBindFragDataLocation: location -> output name ("" for none), or NULL */
+    const char *frag_index1;    /* glBindFragDataLocationIndexed(0, 1): the second-source output's name, or NULL */
     char *log; size_t logsize;
     jmp_buf err;
     struct arena_blk *arena;

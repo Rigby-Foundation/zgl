@@ -5,11 +5,8 @@
 # as on sic, the same virglrenderer the VM's host runs (Homebrew's) executing
 # what they send. Test tooling only.
 #
-#   make            build/glslrun (the .test runner)
-#   make check      run the .test files
-#
-# Not working yet: virglrenderer rejects every draw (GL_INVALID_ENUM in
-# DRAW_VBO), so no test passes here so far.
+#   make            build/glslrun (the .test runner) and build/glapi (API tests)
+#   make check      run both
 
 LLVM_PREFIX ?= $(shell brew --prefix llvm 2>/dev/null)
 CC := $(if $(LLVM_PREFIX),$(LLVM_PREFIX)/bin/clang,cc)
@@ -25,17 +22,24 @@ LIB_OBJ := $(patsubst %.c,$(B)/obj/%.o,$(notdir $(LIB_SRC)))
 vpath %.c $(ZGL)/lib/gl $(ZGL)/lib .
 
 .PHONY: all check clean
-all: $(B)/glslrun
+all: $(B)/glslrun $(B)/glapi
 
 $(B)/obj/%.o: %.c $(wildcard $(ZGL)/lib/gl/*.h $(ZGL)/include/*.h $(ZGL)/include/GL/*.h) vhost.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(ZGL)/lib/gl/procs.inc: $(ZGL)/include/GL/gl.h $(ZGL)/include/GL/gl3_funcs.h $(ZGL)/tools/gen/procs.awk
+	awk -f $(ZGL)/tools/gen/procs.awk $(ZGL)/include/GL/gl.h $(ZGL)/include/GL/gl3_funcs.h > $@
+$(B)/obj/glue.o: $(ZGL)/lib/gl/procs.inc
+
 $(B)/glslrun: $(ZGL)/tools/glslrun.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) $< $(LIB_OBJ) $(LIBS) -o $@
 
+$(B)/glapi: $(ZGL)/tools/glapi.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) $< $(LIB_OBJ) $(LIBS) -o $@
+
 check: all
-	$(B)/glslrun ../glsl/*.test
+	$(B)/glslrun ../glsl/*.test && $(B)/glapi
 
 clean:
 	rm -rf $(B)

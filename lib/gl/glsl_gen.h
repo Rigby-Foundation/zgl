@@ -29,6 +29,8 @@ struct val {
     int is_const;               /* the value is known: cv[], column-major */
     uint32_t cv[16];
     int samp;                   /* F_SAMP: the sampler index */
+    int cb;                     /* F_CONST: the constant buffer (CONST[cb][...] when > 0) */
+    int s140;                   /* in a uniform block: aggregates are laid out std140 */
 };
 
 struct sym {
@@ -71,6 +73,7 @@ struct gen {
     char sv_decl[8][64]; int nsv;
     int dual_src;               /* an `index = 1` output (COLOR[1]) exists */
     int nconst, nsamp;
+    int nubo;                   /* uniform blocks declared */
     enum zgl_type samp_type[64];
     int uses_addr;
     int writes_fragcolor, fragdata_out, fragdepth_out;
@@ -115,6 +118,9 @@ void dst_str(struct gen *g, char *buf, size_t n, struct val v, int reg, int ncom
 float cv_f(const struct val *v, int k);
 int32_t cv_i(const struct val *v, int k);
 struct gtype elem_type(struct gtype t);             /* an array's element type */
+
+/* textureSize() of a buffer sampler: the hidden uniform "gl_zglTexBufSize.<sampler>" (glsl_gen.c) */
+struct val tbo_size_uniform(struct gen *g, struct val samp);
 
 /* glsl_func.c: a call to a built-in function (or texture lookup); returns 0
  * with *out set, or -1 when no built-in has that name */

@@ -98,6 +98,53 @@ void virgl_resource_copy_region(virgl *v, uint32_t dst, uint32_t dst_level, uint
 void virgl_inline_write(virgl *v, uint32_t res, uint32_t level, uint32_t usage, uint32_t stride, uint32_t layer_stride,
                         uint32_t x, uint32_t y, uint32_t z, uint32_t w, uint32_t h, uint32_t d, const void *data, size_t bytes);
 
+/* GL 3 era: instancing, full sampler state, layered views, blits with every
+ * parameter, uniform buffers, queries, stream output, conditional rendering. */
+struct virgl_draw_info {
+    uint32_t mode, start, count;
+    int indexed;
+    uint32_t instance_count, start_instance;
+    int32_t index_bias;
+    int primitive_restart; uint32_t restart_index;
+    uint32_t min_index, max_index;
+    uint32_t count_from_so;                 /* a stream output target handle, 0 = none */
+};
+void virgl_draw_ex(virgl *v, const struct virgl_draw_info *d);
+/* a shader with stream output: n outputs (VIRGL_OBJ_SHADER_SO_OUTPUT_* dwords), strides in dwords per buffer */
+void virgl_create_shader_so(virgl *v, uint32_t handle, uint32_t type, const char *tgsi, int n, const uint32_t stride[4], const uint32_t *outputs);
+void virgl_create_vertex_elements_ex(virgl *v, uint32_t handle, uint32_t n, const uint32_t *src_offset, const uint32_t *divisor,
+                                     const uint32_t *buffer_index, const uint32_t *format);
+struct virgl_sampler_info {
+    uint32_t wrap_s, wrap_t, wrap_r, min_img, min_mip, mag_img;
+    uint32_t compare_mode, compare_func, seamless_cube_map, max_anisotropy;
+    float lod_bias, min_lod, max_lod;
+    uint32_t border[4];
+};
+void virgl_create_sampler_state_ex(virgl *v, uint32_t handle, const struct virgl_sampler_info *si);
+/* for PIPE_BUFFER the layers are the first and last element */
+void virgl_create_sampler_view_ex(virgl *v, uint32_t handle, uint32_t res, uint32_t target, uint32_t format,
+                                  uint32_t first_layer, uint32_t last_layer, uint32_t first_level, uint32_t last_level, uint32_t swizzle);
+struct virgl_blit_box { uint32_t res, level, format; int x, y, z, w, h, d; };
+struct virgl_blit_info {
+    uint32_t mask;                          /* PIPE_MASK_RGBA | PIPE_MASK_Z | PIPE_MASK_S */
+    uint32_t filter;                        /* PIPE_TEX_FILTER_* */
+    int scissor_enable, render_condition_enable;
+    uint32_t scissor[4];                    /* minx, miny, maxx, maxy */
+    struct virgl_blit_box dst, src;
+};
+void virgl_blit(virgl *v, const struct virgl_blit_info *b);
+void virgl_set_uniform_buffer(virgl *v, uint32_t shader_type, uint32_t index, uint32_t offset, uint32_t length, uint32_t res);
+/* a query writes its result (struct virgl_host_query_state) into `res` at `offset` */
+void virgl_create_query(virgl *v, uint32_t handle, uint32_t type, uint32_t index, uint32_t res, uint32_t offset);
+void virgl_begin_query(virgl *v, uint32_t handle);
+void virgl_end_query(virgl *v, uint32_t handle);
+void virgl_get_query_result(virgl *v, uint32_t handle, int wait);
+void virgl_set_render_condition(virgl *v, uint32_t query, int condition, uint32_t mode);
+void virgl_create_so_target(virgl *v, uint32_t handle, uint32_t res, uint32_t offset, uint32_t size);
+void virgl_set_so_targets(virgl *v, uint32_t append_mask, const uint32_t *handles, uint32_t n);
+void virgl_set_sample_mask(virgl *v, uint32_t mask);
+void virgl_set_min_samples(virgl *v, uint32_t n);
+
 /* Blend / rasterizer / depth-stencil objects: fill the dwords the protocol
  * defines and create with the matching size. */
 void virgl_create_blend(virgl *v, uint32_t handle, const uint32_t dw[VIRGL_OBJ_BLEND_SIZE - 1]);

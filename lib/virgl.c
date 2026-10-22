@@ -63,9 +63,15 @@ virgl *virgl_open(void)
     v->buf = malloc(GPU_SUBMIT_MAX);
     if (!v->buf) { close(fd); free(v); return NULL; }
     v->next_handle = 1;
-    if (v->info.capset_size >= sizeof(struct virgl_caps_v1) && v->info.capset_size <= sizeof v->caps) {
-        struct gpu_capset cs = { (uint64_t)(uintptr_t)&v->caps, v->info.capset_size, 0 };
-        if (ioctl(fd, GPU_IOC_GET_CAPSET, &cs) == 0) v->have_caps = 1;
+    if (v->info.capset_size >= sizeof(struct virgl_caps_v1)) {
+        /* a newer host's caps are longer: fetch them whole, keep the part this struct knows */
+        void *all = calloc(1, v->info.capset_size);
+        struct gpu_capset cs = { (uint64_t)(uintptr_t)all, v->info.capset_size, 0 };
+        if (all && ioctl(fd, GPU_IOC_GET_CAPSET, &cs) == 0) {
+            memcpy(&v->caps, all, v->info.capset_size < sizeof v->caps ? v->info.capset_size : sizeof v->caps);
+            v->have_caps = 1;
+        }
+        free(all);
     }
     return v;
 }
@@ -273,21 +279,32 @@ void virgl_dws(virgl *v, const void *p, size_t n) { memcpy(v->buf + v->used, p, 
 
 void virgl_create_shader(virgl *v, uint32_t handle, uint32_t type, const char *tgsi)
 {
+    virgl_create_shader_so(v, handle, type, tgsi, 0, NULL, NULL);
+}
+
+void virgl_create_shader_so(virgl *v, uint32_t handle, uint32_t type, const char *tgsi, int nso, const uint32_t stride[4], const uint32_t *outputs)
+{
     /* A shader longer than a command buffer goes in continuation packets
-     * (offset = total length first, then sent-so-far | CONT). */
+     * (offset = total length first, then sent-so-far | CONT); each carries
+     * the stream output layout. */
     uint32_t total = (uint32_t)strlen(tgsi) + 1, sent = 0;
     uint32_t num_tokens = 300 + total / 4;      /* an upper bound on TGSI tokens: the host sizes its parse buffer with it */
+    uint32_t hdr = VIRGL_OBJ_SHADER_HDR_SIZE(nso);
     while (sent < total) {
-        uint32_t max_bytes = (CMDBUF_DWORDS - 8) * 4;
+        uint32_t max_bytes = (CMDBUF_DWORDS - 8 - hdr) * 4;
         uint32_t chunk = total - sent < max_bytes ? total - sent : max_bytes;
         uint32_t chunk_dw = (chunk + 3) / 4;
-        reserve(v, VIRGL_OBJ_SHADER_HDR_SIZE(0) + chunk_dw + 1);
-        virgl_cmd(v, VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SHADER, VIRGL_OBJ_SHADER_HDR_SIZE(0) + chunk_dw);
+        reserve(v, hdr + chunk_dw + 1);
+        virgl_cmd(v, VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SHADER, hdr + chunk_dw);
         virgl_dw(v, handle);
         virgl_dw(v, type);
         virgl_dw(v, sent == 0 ? total : (sent | VIRGL_OBJ_SHADER_OFFSET_CONT));
         virgl_dw(v, num_tokens);
-        virgl_dw(v, 0);                                 /* no stream output */
+        virgl_dw(v, (uint32_t)nso);
+        if (nso) {
+            for (int i = 0; i < 4; i++) virgl_dw(v, stride[i]);
+            for (int i = 0; i < nso; i++) { virgl_dw(v, outputs[i]); virgl_dw(v, 0); }   /* stream 0 */
+        }
         memset(v->buf + v->used, 0, chunk_dw * 4);
         memcpy(v->buf + v->used, tgsi + sent, chunk);
         v->used += chunk_dw;
@@ -357,11 +374,17 @@ void virgl_clear(virgl *v, uint32_t buffers, const float rgba[4], double depth, 
 void virgl_create_vertex_elements(virgl *v, uint32_t handle, uint32_t n, const uint32_t *src_offset,
                                   const uint32_t *buffer_index, const uint32_t *format)
 {
+    virgl_create_vertex_elements_ex(v, handle, n, src_offset, NULL, buffer_index, format);
+}
+
+void virgl_create_vertex_elements_ex(virgl *v, uint32_t handle, uint32_t n, const uint32_t *src_offset, const uint32_t *divisor,
+                                     const uint32_t *buffer_index, const uint32_t *format)
+{
     virgl_cmd(v, VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS, VIRGL_OBJ_VERTEX_ELEMENTS_SIZE(n));
     virgl_dw(v, handle);
     for (uint32_t i = 0; i < n; i++) {
         virgl_dw(v, src_offset[i]);
-        virgl_dw(v, 0);                                 /* instance divisor */
+        virgl_dw(v, divisor ? divisor[i] : 0);          /* instance divisor */
         virgl_dw(v, buffer_index[i]);
         virgl_dw(v, format[i]);
     }
@@ -389,19 +412,26 @@ void virgl_set_index_buffer(virgl *v, uint32_t res, uint32_t index_size, uint32_
 
 void virgl_draw(virgl *v, uint32_t mode, uint32_t start, uint32_t count, int indexed, uint32_t min_index, uint32_t max_index)
 {
+    struct virgl_draw_info d = { .mode = mode, .start = start, .count = count, .indexed = indexed, .instance_count = 1,
+                                 .min_index = min_index, .max_index = max_index };
+    virgl_draw_ex(v, &d);
+}
+
+void virgl_draw_ex(virgl *v, const struct virgl_draw_info *d)
+{
     virgl_cmd(v, VIRGL_CCMD_DRAW_VBO, 0, VIRGL_DRAW_VBO_SIZE);
-    virgl_dw(v, start);
-    virgl_dw(v, count);
-    virgl_dw(v, mode);
-    virgl_dw(v, indexed ? 1 : 0);
-    virgl_dw(v, 1);                                     /* instance count */
-    virgl_dw(v, 0);                                     /* index bias */
-    virgl_dw(v, 0);                                     /* start instance */
-    virgl_dw(v, 0);                                     /* primitive restart */
-    virgl_dw(v, 0);                                     /* restart index */
-    virgl_dw(v, min_index);
-    virgl_dw(v, max_index);
-    virgl_dw(v, 0);                                     /* count from streamout */
+    virgl_dw(v, d->start);
+    virgl_dw(v, d->count);
+    virgl_dw(v, d->mode);
+    virgl_dw(v, d->indexed ? 1 : 0);
+    virgl_dw(v, d->instance_count);
+    virgl_dw(v, (uint32_t)d->index_bias);
+    virgl_dw(v, d->start_instance);
+    virgl_dw(v, d->primitive_restart ? 1 : 0);
+    virgl_dw(v, d->restart_index);
+    virgl_dw(v, d->min_index);
+    virgl_dw(v, d->max_index);
+    virgl_dw(v, d->count_from_so);
 }
 
 void virgl_bind_object(virgl *v, uint32_t handle, uint32_t obj)
@@ -426,12 +456,23 @@ void virgl_set_constants(virgl *v, uint32_t shader_type, const float *data, uint
 
 void virgl_create_sampler_view(virgl *v, uint32_t handle, uint32_t res, uint32_t target, uint32_t format, uint32_t first_level, uint32_t last_level, uint32_t swizzle)
 {
+    virgl_create_sampler_view_ex(v, handle, res, target, format, 0, 0, first_level, last_level, swizzle);
+}
+
+void virgl_create_sampler_view_ex(virgl *v, uint32_t handle, uint32_t res, uint32_t target, uint32_t format,
+                                  uint32_t first_layer, uint32_t last_layer, uint32_t first_level, uint32_t last_level, uint32_t swizzle)
+{
     virgl_cmd(v, VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW, VIRGL_OBJ_SAMPLER_VIEW_SIZE);
     virgl_dw(v, handle);
     virgl_dw(v, res);
     virgl_dw(v, (format & 0xFFFFFF) | (target << 24));
-    virgl_dw(v, 0);                                     /* first layer .. last layer (16 bits each) */
-    virgl_dw(v, (first_level & 0xFF) | ((last_level & 0xFF) << 8));
+    if (target == PIPE_BUFFER) {                        /* buffers: the first and last element */
+        virgl_dw(v, first_layer);
+        virgl_dw(v, last_layer);
+    } else {
+        virgl_dw(v, (first_layer & 0xFFFF) | (last_layer << 16));
+        virgl_dw(v, (first_level & 0xFF) | ((last_level & 0xFF) << 8));
+    }
     virgl_dw(v, swizzle);
 }
 
@@ -445,15 +486,24 @@ void virgl_set_sampler_views(virgl *v, uint32_t shader_type, uint32_t start, con
 
 void virgl_create_sampler_state(virgl *v, uint32_t handle, uint32_t wrap_s, uint32_t wrap_t, uint32_t min_img, uint32_t min_mip, uint32_t mag_img)
 {
+    struct virgl_sampler_info si = { .wrap_s = wrap_s, .wrap_t = wrap_t, .wrap_r = wrap_s, .min_img = min_img, .min_mip = min_mip,
+                                     .mag_img = mag_img, .max_lod = min_mip == PIPE_TEX_MIPFILTER_NONE ? 0.0f : 1000.0f };
+    virgl_create_sampler_state_ex(v, handle, &si);
+}
+
+void virgl_create_sampler_state_ex(virgl *v, uint32_t handle, const struct virgl_sampler_info *si)
+{
     virgl_cmd(v, VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_STATE, VIRGL_OBJ_SAMPLER_STATE_SIZE);
     virgl_dw(v, handle);
-    virgl_dw(v, VIRGL_OBJ_SAMPLE_STATE_S0_WRAP_S(wrap_s) | VIRGL_OBJ_SAMPLE_STATE_S0_WRAP_T(wrap_t) |
-                VIRGL_OBJ_SAMPLE_STATE_S0_WRAP_R(wrap_s) | VIRGL_OBJ_SAMPLE_STATE_S0_MIN_IMG_FILTER(min_img) |
-                VIRGL_OBJ_SAMPLE_STATE_S0_MIN_MIP_FILTER(min_mip) | VIRGL_OBJ_SAMPLE_STATE_S0_MAG_IMG_FILTER(mag_img));
-    virgl_f(v, 0.0f);                                   /* lod bias */
-    virgl_f(v, 0.0f);                                   /* min lod */
-    virgl_f(v, min_mip == PIPE_TEX_MIPFILTER_NONE ? 0.0f : 1000.0f);   /* max lod */
-    for (int i = 0; i < 4; i++) virgl_f(v, 0.0f);       /* border colour */
+    virgl_dw(v, VIRGL_OBJ_SAMPLE_STATE_S0_WRAP_S(si->wrap_s) | VIRGL_OBJ_SAMPLE_STATE_S0_WRAP_T(si->wrap_t) |
+                VIRGL_OBJ_SAMPLE_STATE_S0_WRAP_R(si->wrap_r) | VIRGL_OBJ_SAMPLE_STATE_S0_MIN_IMG_FILTER(si->min_img) |
+                VIRGL_OBJ_SAMPLE_STATE_S0_MIN_MIP_FILTER(si->min_mip) | VIRGL_OBJ_SAMPLE_STATE_S0_MAG_IMG_FILTER(si->mag_img) |
+                VIRGL_OBJ_SAMPLE_STATE_S0_COMPARE_MODE(si->compare_mode) | VIRGL_OBJ_SAMPLE_STATE_S0_COMPARE_FUNC(si->compare_func) |
+                VIRGL_OBJ_SAMPLE_STATE_S0_SEAMLESS_CUBE_MAP(si->seamless_cube_map) | VIRGL_OBJ_SAMPLE_STATE_S0_MAX_ANISOTROPY(si->max_anisotropy));
+    virgl_f(v, si->lod_bias);
+    virgl_f(v, si->min_lod);
+    virgl_f(v, si->max_lod);
+    for (int i = 0; i < 4; i++) virgl_dw(v, si->border[i]);     /* raw: floats, or ints for integer textures */
 }
 
 void virgl_bind_sampler_states(virgl *v, uint32_t shader_type, uint32_t start, const uint32_t *handles, uint32_t n)
@@ -517,3 +567,75 @@ void virgl_create_dsa(virgl *v, uint32_t handle, const uint32_t dw[VIRGL_OBJ_DSA
     virgl_dw(v, handle);
     virgl_dws(v, dw, VIRGL_OBJ_DSA_SIZE - 1);
 }
+
+/* ---- GL 3 era state ----------------------------------------------------------- */
+
+
+void virgl_set_uniform_buffer(virgl *v, uint32_t shader_type, uint32_t index, uint32_t offset, uint32_t length, uint32_t res)
+{
+    virgl_cmd(v, VIRGL_CCMD_SET_UNIFORM_BUFFER, 0, VIRGL_SET_UNIFORM_BUFFER_SIZE);
+    virgl_dw(v, shader_type);
+    virgl_dw(v, index);
+    virgl_dw(v, offset);
+    virgl_dw(v, length);
+    virgl_dw(v, res);
+}
+
+void virgl_blit(virgl *v, const struct virgl_blit_info *b)
+{
+    virgl_cmd(v, VIRGL_CCMD_BLIT, 0, VIRGL_CMD_BLIT_SIZE);
+    virgl_dw(v, (b->mask & 0xFF) | ((b->filter & 3) << 8) | ((b->scissor_enable & 1) << 10) | ((b->render_condition_enable & 1) << 11));
+    virgl_dw(v, (b->scissor[0] & 0xFFFF) | (b->scissor[1] << 16));
+    virgl_dw(v, (b->scissor[2] & 0xFFFF) | (b->scissor[3] << 16));
+    virgl_dw(v, b->dst.res); virgl_dw(v, b->dst.level); virgl_dw(v, b->dst.format);
+    virgl_dw(v, (uint32_t)b->dst.x); virgl_dw(v, (uint32_t)b->dst.y); virgl_dw(v, (uint32_t)b->dst.z);
+    virgl_dw(v, (uint32_t)b->dst.w); virgl_dw(v, (uint32_t)b->dst.h); virgl_dw(v, (uint32_t)b->dst.d);
+    virgl_dw(v, b->src.res); virgl_dw(v, b->src.level); virgl_dw(v, b->src.format);
+    virgl_dw(v, (uint32_t)b->src.x); virgl_dw(v, (uint32_t)b->src.y); virgl_dw(v, (uint32_t)b->src.z);
+    virgl_dw(v, (uint32_t)b->src.w); virgl_dw(v, (uint32_t)b->src.h); virgl_dw(v, (uint32_t)b->src.d);
+}
+
+void virgl_create_query(virgl *v, uint32_t handle, uint32_t type, uint32_t index, uint32_t res, uint32_t offset)
+{
+    virgl_cmd(v, VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_QUERY, VIRGL_OBJ_QUERY_SIZE);
+    virgl_dw(v, handle);
+    virgl_dw(v, VIRGL_OBJ_QUERY_TYPE(type) | VIRGL_OBJ_QUERY_INDEX(index));
+    virgl_dw(v, offset);
+    virgl_dw(v, res);
+}
+
+void virgl_begin_query(virgl *v, uint32_t handle) { virgl_cmd(v, VIRGL_CCMD_BEGIN_QUERY, 0, 1); virgl_dw(v, handle); }
+void virgl_end_query(virgl *v, uint32_t handle) { virgl_cmd(v, VIRGL_CCMD_END_QUERY, 0, 1); virgl_dw(v, handle); }
+void virgl_get_query_result(virgl *v, uint32_t handle, int wait)
+{
+    virgl_cmd(v, VIRGL_CCMD_GET_QUERY_RESULT, 0, VIRGL_QUERY_RESULT_SIZE);
+    virgl_dw(v, handle);
+    virgl_dw(v, wait ? 1 : 0);
+}
+
+void virgl_set_render_condition(virgl *v, uint32_t query, int condition, uint32_t mode)
+{
+    virgl_cmd(v, VIRGL_CCMD_SET_RENDER_CONDITION, 0, VIRGL_RENDER_CONDITION_SIZE);
+    virgl_dw(v, query);
+    virgl_dw(v, condition ? 1 : 0);
+    virgl_dw(v, mode);
+}
+
+void virgl_create_so_target(virgl *v, uint32_t handle, uint32_t res, uint32_t offset, uint32_t size)
+{
+    virgl_cmd(v, VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_STREAMOUT_TARGET, VIRGL_OBJ_STREAMOUT_SIZE);
+    virgl_dw(v, handle);
+    virgl_dw(v, res);
+    virgl_dw(v, offset);
+    virgl_dw(v, size);
+}
+
+void virgl_set_so_targets(virgl *v, uint32_t append_mask, const uint32_t *handles, uint32_t n)
+{
+    virgl_cmd(v, VIRGL_CCMD_SET_STREAMOUT_TARGETS, 0, 1 + n);
+    virgl_dw(v, append_mask);
+    for (uint32_t i = 0; i < n; i++) virgl_dw(v, handles[i]);
+}
+
+void virgl_set_sample_mask(virgl *v, uint32_t mask) { virgl_cmd(v, VIRGL_CCMD_SET_SAMPLE_MASK, 0, VIRGL_SET_SAMPLE_MASK_SIZE); virgl_dw(v, mask); }
+void virgl_set_min_samples(virgl *v, uint32_t n) { virgl_cmd(v, VIRGL_CCMD_SET_MIN_SAMPLES, 0, VIRGL_SET_MIN_SAMPLES_SIZE); virgl_dw(v, n); }

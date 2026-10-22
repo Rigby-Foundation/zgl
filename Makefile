@@ -63,6 +63,11 @@ $(BUILD)/%.o: %.c $(wildcard include/*.h include/GL/*.h lib/gl/*.h lib/r300/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# the proc table (sic_gl_proc) lists every function the headers declare
+lib/gl/procs.inc: include/GL/gl.h include/GL/gl3_funcs.h tools/gen/procs.awk
+	awk -f tools/gen/procs.awk include/GL/gl.h include/GL/gl3_funcs.h > $@
+$(BUILD)/lib/gl/glue.o: lib/gl/procs.inc
+
 $(VIRGL_LIB): $(VIRGL_OBJS)
 	rm -f $@ && $(AR) rcs $@ $^
 

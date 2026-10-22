@@ -151,6 +151,8 @@ static struct texinfo tex_info(enum zgl_type st)
     struct texinfo t;
     memset(&t, 0, sizeof t);
     const char *tg = zgl_type_tgsi_target(st);
+    /* buffer samplers are 2D textures on the host (see texel_fetch) */
+    if (st == T_SAMPLERBUFFER || st == T_ISAMPLERBUFFER || st == T_USAMPLERBUFFER) { t.dims = 1; t.buffer = 1; return t; }
     t.shadow = !strncmp(tg, "SHADOW", 6);
     if (t.shadow) tg += 6;
     if (!strcmp(tg, "1D")) t.dims = 1;
@@ -286,6 +288,20 @@ static struct val texel_fetch(struct gen *g, const char *fn, struct val *a, int 
     if (nc(p) != coord_size(ti)) ERR("%s(): wrong coordinate size", fn);
     struct val extra = v_iimm(g, 0);
     int k = 2;
+    if (ti.buffer) {
+        /* a texture buffer is kept as a 2D texture ZGL_TBO_WIDTH texels wide
+         * (macOS GL through virglrenderer can't be trusted with GL_TEXTURE_BUFFER):
+         * element i is texel (i % width, i / width) */
+        if (n != 2) ERR("%s(): too many arguments", fn);
+        struct val c = v_temp(g, ty_vec(GK_INT, 4));
+        struct val i = v_convert(g, p, GK_INT);
+        v_store(g, v_comp(c, 0), op2(g, "AND", ty_scalar(GK_INT), i, v_iimm(g, ZGL_TBO_WIDTH - 1)));
+        v_store(g, v_comp(c, 1), op2(g, "ISHR", ty_scalar(GK_INT), i, v_iimm(g, ZGL_TBO_SHIFT)));
+        v_store(g, v_comp(c, 2), v_iimm(g, 0));
+        v_store(g, v_comp(c, 3), v_iimm(g, 0));
+        struct val srcs[1] = { c };
+        return tex_result(g, tex_emit(g, "TXF", st, a[0], srcs, 1, NULL), st, 0);
+    }
     if (!ti.buffer) { if (k >= n) ERR("%s(): %s missing", fn, ti.ms ? "sample" : "lod"); extra = a[k++]; }
     char offs[64]; const char *offp = NULL;
     if (offset) { if (k >= n) ERR("%s(): offset missing", fn); offset_str(g, a[k++], offs, sizeof offs, ti.dims); offp = offs; }
@@ -301,6 +317,11 @@ static struct val texture_size(struct gen *g, struct val *a, int n)
     enum zgl_type st = a[0].t.sampler;
     struct texinfo ti = tex_info(st);
     struct val lodv = v_iimm(g, 0);
+    if (ti.buffer) {
+        /* the element count: a hidden uniform the GL layer fills (the host texture's size isn't it) */
+        if (n > 1) ERR("textureSize(): a buffer sampler takes no lod");
+        return tbo_size_uniform(g, a[0]);
+    }
     if (!ti.buffer && !ti.ms && !ti.rect) { if (n != 2) ERR("textureSize(): needs a lod"); lodv = a[1]; }
     else if (n > 2) ERR("textureSize(): too many arguments");   /* a lod here is ignored, as drivers do */
     int dims = ti.cube ? 2 : ti.dims;

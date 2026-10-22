@@ -91,6 +91,49 @@ int ty_elem_regs(struct gtype t)
 
 int ty_regs(struct gtype t) { return ty_elem_regs(t) * (t.array > 0 ? t.array : 1); }
 
+/* std140, the layout of uniform blocks: alignment and size in bytes */
+static int s140_size(struct gtype t);
+static int round_up(int x, int a) { return (x + a - 1) / a * a; }
+static int s140_align(struct gtype t)
+{
+    if (t.array || t.cols || t.k == GK_STRUCT) return 16;           /* arrays, matrices (arrays of columns), structs: a vec4 */
+    return t.vec == 1 ? 4 : t.vec == 2 ? 8 : 16;
+}
+/* where member i of a struct starts */
+static int s140_member_offset(const struct gstruct *st, int i)
+{
+    int off = 0;
+    for (int k = 0; k <= i; k++) {
+        off = round_up(off, s140_align(st->f[k].t));
+        if (k == i) return off;
+        off += s140_size(st->f[k].t);
+    }
+    return off;
+}
+static int s140_elem_size(struct gtype t)            /* one element (t not an array) */
+{
+    if (t.k == GK_STRUCT) {
+        if (!t.st->n) return 16;
+        int last = t.st->n - 1;
+        return round_up(s140_member_offset(t.st, last) + s140_size(t.st->f[last].t), 16);
+    }
+    if (t.cols) return t.cols * 16;
+    return t.vec * 4;
+}
+static int s140_stride(struct gtype t) { struct gtype e = t; e.array = 0; return round_up(s140_elem_size(e), 16); }   /* array element stride */
+static int s140_size(struct gtype t) { return t.array ? s140_stride(t) * t.array : s140_elem_size(t); }
+
+/* a value in a uniform block at byte offset `off` of the constants: its register, and its components for a scalar or vector */
+static struct val cb_val(int off, struct gtype t)
+{
+    struct val v;
+    memset(&v, 0, sizeof v);
+    v.t = t; v.file = F_CONST; v.s140 = 1; v.index = off / 16;
+    int c = (t.array || t.cols || t.k == GK_STRUCT) ? 0 : (off % 16) / 4;
+    for (int i = 0; i < 4; i++) v.swz[i] = (unsigned char)(c + (i < (t.vec ? t.vec : 1) ? i : (t.vec ? t.vec : 1) - 1));
+    return v;
+}
+
 const char *ty_name(struct gtype t, char *buf, size_t n)
 {
     const char *base;
@@ -291,7 +334,10 @@ void src_str(struct gen *g, char *buf, size_t n, struct val v, int reg)
     for (int i = 0; i < 4; i++) sw[i] = "xyzw"[v.swz[i < nc ? i : nc - 1] & 3];
     sw[4] = 0;
     char r[64];
-    if (v.ind) {
+    if (v.file == F_CONST && v.cb) {
+        if (v.ind) snprintf(r, sizeof r, "CONST[%d][ADDR[0].x+%d]", v.cb, v.index + reg);
+        else snprintf(r, sizeof r, "CONST[%d][%d]", v.cb, v.index + reg);
+    } else if (v.ind) {
         if (v.arr) snprintf(r, sizeof r, "%s[ADDR[0].x+%d](%d)", file_name(v.file), v.index + reg, v.arr);
         else snprintf(r, sizeof r, "%s[ADDR[0].x+%d]", file_name(v.file), v.index + reg);
     } else snprintf(r, sizeof r, "%s[%d]", file_name(v.file), v.index + reg);
@@ -463,8 +509,42 @@ static struct val io_select(struct gen *g, struct val v)
     return r;
 }
 
+static int has_struct(struct gtype t) { return t.k == GK_STRUCT; }
+static struct val field(struct gen *g, struct val base, const char *f);
+static struct val index_val(struct gen *g, struct val base, struct val idx);
+
+/* copy a std140 aggregate leaf by leaf into dst (registers, our layout) */
+static void cb_unpack(struct gen *g, struct val dst, struct val src)
+{
+    if (src.t.array) {
+        struct gtype e = elem_type(src.t);
+        for (int i = 0; i < src.t.array; i++) {
+            struct val d = dst; d.t = e; d.index = dst.index + i * ty_regs(e); ident_swz(&d);
+            cb_unpack(g, d, index_val(g, src, v_iimm(g, i)));
+        }
+        return;
+    }
+    if (src.t.k == GK_STRUCT) {
+        int off = 0;
+        for (int i = 0; i < src.t.st->n; i++) {
+            struct val d = dst; d.t = src.t.st->f[i].t; d.index = dst.index + off; ident_swz(&d);
+            cb_unpack(g, d, field(g, src, src.t.st->f[i].name));
+            off += ty_regs(src.t.st->f[i].t);
+        }
+        return;
+    }
+    v_store(g, dst, src);
+}
+
 struct val v_direct(struct gen *g, struct val v)
 {
+    if (v.file == F_CONST && v.s140 && has_struct(v.t)) {
+        struct val r = v_temp(g, v.t);
+        r.lv = 1;
+        cb_unpack(g, r, v);
+        r.lv = 0;
+        return r;
+    }
     if (v.ind == 2) return io_select(g, v);
     if (!v.ind) return v;
     g->uses_addr = 1;
@@ -1080,6 +1160,97 @@ static struct val declare_uniform(struct gen *g, const char *name, struct gtype 
     return reg_val(F_CONST, idx, t, 0);
 }
 
+/* a block member's GL leaves: struct members and arrays of structs expanded, with their std140 layout */
+static void block_leaves(struct gen *g, struct zgl_block *b, const char *name, struct gtype t, int off, int row_major)
+{
+    if (t.k == GK_STRUCT) {
+        int n = t.array ? t.array : 1;
+        struct gtype e = elem_type(t);
+        for (int a = 0; a < n; a++) {
+            int eoff = off + a * (t.array ? s140_stride(t) : 0);
+            for (int i = 0; i < t.st->n; i++) {
+                char nm[96];
+                if (t.array) snprintf(nm, sizeof nm, "%s[%d].%s", name, a, t.st->f[i].name);
+                else snprintf(nm, sizeof nm, "%s.%s", name, t.st->f[i].name);
+                block_leaves(g, b, nm, t.st->f[i].t, eoff + s140_member_offset(e.st, i), row_major);
+            }
+        }
+        return;
+    }
+    if (b->nmembers >= ZGL_MAX_BLOCK_MEMBERS) ERR("uniform block '%s' has too many members", b->name);
+    struct zgl_block_member *m = &b->members[b->nmembers++];
+    snprintf(m->name, sizeof m->name, "%s%s", name, t.array ? "[0]" : "");
+    m->type = to_ztype(elem_type(t));
+    m->array = t.array;
+    m->offset = off;
+    m->array_stride = t.array ? s140_stride(t) : 0;
+    m->matrix_stride = t.cols ? 16 : 0;
+    m->row_major = row_major && t.cols;
+}
+
+/* uniform Name { members } [instance];  -> a run of the constants, laid out
+ * std140, which the GL layer fills from the block's buffer range at draw
+ * time. (virglrenderer 1.3.0 declares host uniform blocks with an
+ * #extension macOS GL rejects, so they can't be host constant buffers.) */
+static void declare_block(struct gen *g, struct gdecl *d)
+{
+    struct zgl_compiled *o = g->c->out;
+    if (g->nubo >= ZGL_MAX_STAGE_UBOS) ERR("too many uniform blocks");
+    g->nubo++;
+    struct zgl_block *b = &o->blocks[o->nblocks++];
+    memset(b, 0, sizeof *b);
+    snprintf(b->name, sizeof b->name, "%s", d->block_name);
+    b->cb = g->nconst; b->binding = d->binding;            /* cb: the first constant register */
+    int base = g->nconst * 16;
+    int off = 0;
+    for (int k = 0; k < d->ts->nfields; k++) {
+        struct node *m = d->ts->fields[k];
+        struct gtype ft = resolve_tspec(g, m->ts);
+        for (int j = 0; j < m->n; j++) {
+            struct gtype t = with_array(g, ft, m->l[j]);
+            if (t.k == GK_SAMPLER) ERR("samplers can't be in a uniform block");
+            if (d->row_major && (t.cols || t.k == GK_STRUCT)) ERR("row_major matrices in uniform blocks are not supported");
+            off = round_up(off, s140_align(t));
+            struct val v = cb_val(base + off, t);
+            /* GL names the members Block.member when the block has an instance name */
+            char nm[96];
+            if (d->instance) snprintf(nm, sizeof nm, "%s.%s", d->block_name, m->l[j]->name);
+            else snprintf(nm, sizeof nm, "%s", m->l[j]->name);
+            block_leaves(g, b, nm, t, off, d->row_major);
+            if (d->instance) {
+                /* instance.member: register the member under a mangled name the field lookup finds */
+                char in[96];
+                snprintf(in, sizeof in, "%s.%s", d->instance, m->l[j]->name);
+                sym_add(g, ar_strdup(g->c, in), t, v, Q_UNIFORM);
+            } else sym_add(g, m->l[j]->name, t, v, Q_UNIFORM);
+            off += s140_size(t);
+        }
+    }
+    b->size = round_up(off > 0 ? off : 16, 16);
+    if (b->size > 16384) ERR("uniform block '%s' is larger than 16384 bytes", d->block_name);
+    if (g->nconst + b->size / 16 > ZGL_MAX_CONSTS) ERR("uniform block '%s' doesn't fit in the constants", d->block_name);
+    g->nconst += b->size / 16;
+}
+
+static struct sym *global_sym(struct gen *g, const char *name, struct gtype t, struct val v);
+
+struct val tbo_size_uniform(struct gen *g, struct val samp)
+{
+    const struct zgl_compiled *o = g->c->out;
+    const struct zgl_var *sv = NULL;
+    for (int i = 0; i < o->nsamplers; i++)
+        if (samp.index >= o->samplers[i].slot && samp.index < o->samplers[i].slot + (o->samplers[i].array ? o->samplers[i].array : 1)) sv = &o->samplers[i];
+    if (!sv) ERR("textureSize(): a buffer sampler that is not a uniform");
+    if (sv->array) ERR("textureSize(): arrays of buffer samplers are not supported");
+    const char *sname = sv->name;
+    char nm[96];
+    snprintf(nm, sizeof nm, ZGL_TBSIZE_PREFIX "%s", sname);
+    struct sym *s = sym_find(g, nm);
+    if (!s) s = global_sym(g, ar_strdup(g->c, nm), ty_scalar(GK_INT), declare_uniform(g, ar_strdup(g->c, nm), ty_scalar(GK_INT), -1));
+    struct val v = s->v; v.t = s->t; v.lv = 0;
+    return v;
+}
+
 static int find_vs_varying(struct gen *g, const char *name)
 {
     if (!g->c->vs) return -1;
@@ -1149,6 +1320,7 @@ static struct val declare_varying(struct gen *g, const char *name, struct gtype 
         io_decl(g, 0, idx, n, "GENERIC", slot, NULL);
         add_var(o->varyings, &o->nvaryings, name, to_ztype(elem_type(t)), t.array, slot, n, 0, -1);
         o->varyings[o->nvaryings - 1].flat = flat;
+        o->varyings[o->nvaryings - 1].reg = idx;
         return reg_val(F_OUT, idx, t, 1);
     }
     int slot = find_vs_varying(g, name);
@@ -1165,6 +1337,11 @@ static struct val declare_frag_output(struct gen *g, const char *name, struct gt
 {
     if (t.k == GK_STRUCT || t.k == GK_SAMPLER || t.k == GK_BOOL || t.cols) ERR("'%s': fragment outputs are scalars or vectors", name);
     int n = t.array ? t.array : 1;
+    /* glBindFragDataLocation(Indexed) for outputs without layout(location) */
+    unsigned reserved = 0;
+    if (g->c->frag_loc)
+        for (int k = 0; k < 8; k++) if (g->c->frag_loc[k][0]) { reserved |= 1u << k; if (location < 0 && !strcmp(g->c->frag_loc[k], name)) location = k; }
+    if (location < 0 && g->c->frag_index1 && !strcmp(g->c->frag_index1, name)) { location = 0; index = 1; }
     if (index == 1) {
         /* dual-source blending: the second colour of location 0 is COLOR[1] */
         if (location != 0 || n != 1) ERR("'%s': a second-source output is location 0, not an array", name);
@@ -1184,7 +1361,7 @@ static struct val declare_frag_output(struct gen *g, const char *name, struct gt
     int loc = location;
     if (loc < 0) {
         loc = 0;
-        while (loc < 8 && (g->color_used & (1u << loc))) loc++;
+        while (loc < 8 && ((g->color_used | reserved) & (1u << loc))) loc++;
     }
     if (loc + n > 8) ERR("'%s': fragment output location out of range", name);
     for (int i = 0; i < n; i++) {
@@ -1329,15 +1506,15 @@ static struct sym *builtin_var(struct gen *g, const char *name)
         if (!strcmp(name, "gl_PointSize")) {
             int idx = g->nout++;
             io_decl(g, 0, idx, 1, "PSIZE", -1, NULL);
+            g->c->out->pointsize_reg = idx;
             return global_sym(g, name, f, reg_val(F_OUT, idx, f, 1));
         }
         if (!strcmp(name, "gl_InstanceID")) {
-            /* zgl has no instanced draws yet, so it is always 0; and the
-             * INSTANCEID system value would make virglrenderer (1.3.0) ask
-             * the host for ARB_draw_instanced, which macOS's core profile
-             * lacks and which fails the whole context. When instancing
-             * comes, this becomes a hidden per-instance attribute. */
-            return global_sym(g, name, ty_scalar(GK_INT), v_iimm(g, 0));
+            /* a hidden per-instance attribute the GL layer feeds 0, 1, 2, ...:
+             * the INSTANCEID system value would make virglrenderer (1.3.0)
+             * ask the host for ARB_draw_instanced, which macOS's core
+             * profile lacks and which fails the whole context */
+            return global_sym(g, name, ty_scalar(GK_INT), declare_attribute(g, "gl_InstanceID", ty_scalar(GK_INT), -1, -1));
         }
         if (!strcmp(name, "gl_VertexID")) {
             int idx = g->nsv++;
@@ -1434,6 +1611,15 @@ static int has_side_effects(struct node *n)
 
 static struct val field(struct gen *g, struct val base, const char *f)
 {
+    if (base.t.k == GK_STRUCT && !base.t.array && base.file == F_CONST && base.s140) {
+        for (int i = 0; i < base.t.st->n; i++)
+            if (!strcmp(base.t.st->f[i].name, f)) {
+                struct val r = cb_val(base.index * 16 + s140_member_offset(base.t.st, i), base.t.st->f[i].t);
+                r.ind = base.ind; r.ind_reg = base.ind_reg;
+                return r;
+            }
+        ERR("'%s' has no member '%s'", base.t.st->name, f);
+    }
     if (base.t.k == GK_STRUCT && !base.t.array) {
         int off = 0;
         for (int i = 0; i < base.t.st->n; i++) {
@@ -1477,6 +1663,7 @@ static struct val index_val(struct gen *g, struct val base, struct val idx)
         struct gtype et = base.t.array ? elem_type(base.t) : ty_vec(GK_FLOAT, base.t.vec);
         int count = base.t.array ? base.t.array : base.t.cols;
         int er = base.t.array ? ty_elem_regs(base.t) : 1;
+        if (base.file == F_CONST && base.s140 && base.t.array) er = s140_stride(base.t) / 16;
         struct val r = base;
         r.t = et;
         ident_swz(&r);
@@ -2404,10 +2591,12 @@ void gen_unit(struct glc *c)
     g->c = c;
     light_struct = material_struct = lightmodel_struct = NULL;
     struct zgl_compiled *o = c->out;
+    o->position_reg = o->pointsize_reg = -1;
     /* the outputs every stage has */
     if (c->stage == GL_VERTEX_SHADER) {
         int idx = g->nout++;
         io_decl(g, 0, idx, 1, "POSITION", -1, NULL);
+        o->position_reg = idx;
         struct gtype v4 = ty_vec(GK_FLOAT, 4);
         sym_add(g, "gl_Position", v4, reg_val(F_OUT, idx, v4, 1), 0);
     }
@@ -2421,25 +2610,8 @@ void gen_unit(struct glc *c)
         case G_STRUCT: c->line = 0; declare_struct(g, d->ts); break;
         case G_VAR: global_var(g, d->var); break;
         case G_BLOCK:
-            if (d->quals & Q_UNIFORM) {
-                /* a uniform block, for now as ordinary uniforms named Block.member */
-                for (int k = 0; k < d->ts->nfields; k++) {
-                    struct node *m = d->ts->fields[k];
-                    struct gtype ft = resolve_tspec(g, m->ts);
-                    for (int j = 0; j < m->n; j++) {
-                        struct gtype t = with_array(g, ft, m->l[j]);
-                        char nm[96];
-                        snprintf(nm, sizeof nm, "%s.%s", d->block_name, m->l[j]->name);
-                        struct val v = declare_uniform(g, ar_strdup(c, nm), t, -1);
-                        if (d->instance) {
-                            /* instance.member: register the member under a mangled name the field lookup finds */
-                            char in[96];
-                            snprintf(in, sizeof in, "%s.%s", d->instance, m->l[j]->name);
-                            sym_add(g, ar_strdup(c, in), t, v, Q_UNIFORM);
-                        } else sym_add(g, m->l[j]->name, t, v, Q_UNIFORM);
-                    }
-                }
-            } else ERR("in/out interface blocks are not supported");
+            if (d->quals & Q_UNIFORM) declare_block(g, d);
+            else ERR("in/out interface blocks are not supported");
             break;
         case G_FUNC:
             declare_function(g, d->fn);
@@ -2524,11 +2696,18 @@ static void assemble(struct glc *c, struct gen *g)
 
 int zgl_compile_linked(const char *source, GLenum type, const struct zgl_compiled *vs, struct zgl_compiled *out, char *log, size_t logsize)
 {
+    return zgl_compile_linked_ex(source, type, vs, NULL, NULL, out, log, logsize);
+}
+
+int zgl_compile_linked_ex(const char *source, GLenum type, const struct zgl_compiled *vs, const char (*frag_loc)[48], const char *frag_index1,
+                          struct zgl_compiled *out, char *log, size_t logsize)
+{
     struct glc *c = calloc(1, sizeof *c);
     struct gen *g = calloc(1, sizeof *g);
     if (!c || !g) { free(c); free(g); snprintf(log, logsize, "out of memory\n"); return -1; }
     memset(out, 0, sizeof *out);
     c->stage = type; c->out = out; c->vs = vs; c->log = log; c->logsize = logsize; c->g = g;
+    c->frag_loc = frag_loc; c->frag_index1 = frag_index1;
     log[0] = 0;
     int rc = 0;
     if (setjmp(c->err)) {

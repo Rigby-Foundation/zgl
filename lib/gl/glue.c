@@ -20,13 +20,14 @@ static int make_targets(struct zgl_ctx *c, int w, int h)
     c->color = virgl_res_create(c->v, PIPE_TEXTURE_2D, VIRGL_FORMAT_B8G8R8A8_UNORM, VIRGL_BIND_RENDER_TARGET | VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_SCANOUT,
                                 (uint32_t)w, (uint32_t)h, 1, 0, (size_t)w * h * 4);
     /* Depth: the packed 24+8 format is not always there (macOS GL lacks it);
-     * ask the caps, prefer a format with stencil bits. */
+     * ask the caps (the depth-stencil set, or the sampled one where a host
+     * lists depth formats only there), prefer a format with stencil bits. */
     static const uint32_t depth_fmts[] = { VIRGL_FORMAT_Z24_UNORM_S8_UINT, VIRGL_FORMAT_S8_UINT_Z24_UNORM, VIRGL_FORMAT_Z32_FLOAT_S8X24_UINT,
                                            VIRGL_FORMAT_Z24X8_UNORM, VIRGL_FORMAT_Z32_FLOAT, VIRGL_FORMAT_Z16_UNORM };
     const struct virgl_caps_v2 *caps = virgl_caps(c->v);
     c->depth_format = VIRGL_FORMAT_Z24X8_UNORM;
     for (size_t i = 0; caps && i < sizeof depth_fmts / sizeof depth_fmts[0]; i++)
-        if (caps->v1.depthstencil.bitmask[depth_fmts[i] / 32] & (1u << (depth_fmts[i] % 32))) { c->depth_format = depth_fmts[i]; break; }
+        if ((caps->v1.depthstencil.bitmask[depth_fmts[i] / 32] | caps->v1.sampler.bitmask[depth_fmts[i] / 32]) & (1u << (depth_fmts[i] % 32))) { c->depth_format = depth_fmts[i]; break; }
     c->depth = virgl_res_create(c->v, PIPE_TEXTURE_2D, c->depth_format, VIRGL_BIND_DEPTH_STENCIL, (uint32_t)w, (uint32_t)h, 1, 0, 0);
     if (!c->color || !c->color->map || !c->depth) return -1;
     c->h_color_surf = virgl_handle(c->v);
@@ -52,13 +53,22 @@ sic_gl_context *sic_gl_create(int width, int height)
     if (make_targets(c, width, height) != 0) { virgl_close(v); free(ctx); return NULL; }
     /* GL defaults */
     c->clear_depth = 1.0; c->depth_func = GL_LESS; c->depth_mask = 1; c->depth_near = 0; c->depth_far = 1;
-    c->blend_src = c->blend_src_a = GL_ONE; c->blend_dst = c->blend_dst_a = GL_ZERO; c->blend_eq = GL_FUNC_ADD;
+    c->blend_src = c->blend_src_a = GL_ONE; c->blend_dst = c->blend_dst_a = GL_ZERO; c->blend_eq = c->blend_eq_a = GL_FUNC_ADD;
     c->cull_mode = GL_BACK; c->front_face = GL_CCW; c->polygon_mode = GL_FILL; c->line_width = 1; c->point_size = 1;
-    c->color_mask = 0xF; c->alpha_func = GL_ALWAYS; c->shade_model = GL_SMOOTH;
+    for (int i = 0; i < ZGL_MAX_DRAW_BUFFERS; i++) c->color_masks[i] = 0xF;
+    c->alpha_func = GL_ALWAYS; c->shade_model = GL_SMOOTH;
+    for (int f = 0; f < 2; f++) {
+        c->stencil_func[f] = GL_ALWAYS; c->stencil_fail[f] = c->stencil_zfail[f] = c->stencil_zpass[f] = GL_KEEP;
+        c->stencil_vmask[f] = c->stencil_wmask[f] = 0xFFFFFFFFu;
+    }
+    c->logic_op = GL_COPY; c->provoking_vertex = GL_LAST_VERTEX_CONVENTION;
+    c->multisample = 1; c->dither = 1; c->sample_coverage = 1; c->sample_mask = 0xFFFFFFFFu;
     c->unpack_alignment = 4; c->pack_alignment = 4;
     c->vp_w = width; c->vp_h = height; c->sc_w = width; c->sc_h = height; c->vp_dirty = 1;
+    c->win_draw_buffer = c->win_read_buffer = GL_BACK;
+    c->vao = &c->vao0;
     c->next_name = 1;
-    for (int i = 0; i < ZGL_MAX_ATTRIBS; i++) c->attribs[i].value[3] = 1;
+    for (int i = 0; i < ZGL_MAX_ATTRIBS; i++) { c->cur_attrib[i].v.f[3] = 1; c->cur_attrib[i].type = GL_FLOAT; }
     zgl_ffp_init(c);
     zgl = c;
     return ctx;
@@ -145,165 +155,28 @@ void sic_gl_destroy(sic_gl_context *ctx)
 }
 
 static const struct { const char *name; void *fn; } procs[] = {
-    { "glClearColor", (void *)glClearColor },
-    { "glClearDepth", (void *)glClearDepth },
-    { "glClearStencil", (void *)glClearStencil },
-    { "glClear", (void *)glClear },
-    { "glViewport", (void *)glViewport },
-    { "glScissor", (void *)glScissor },
-    { "glEnable", (void *)glEnable },
-    { "glDisable", (void *)glDisable },
-    { "glIsEnabled", (void *)glIsEnabled },
-    { "glDepthFunc", (void *)glDepthFunc },
-    { "glDepthMask", (void *)glDepthMask },
-    { "glDepthRange", (void *)glDepthRange },
-    { "glBlendFunc", (void *)glBlendFunc },
-    { "glBlendFuncSeparate", (void *)glBlendFuncSeparate },
-    { "glBlendEquation", (void *)glBlendEquation },
-    { "glBlendColor", (void *)glBlendColor },
-    { "glAlphaFunc", (void *)glAlphaFunc },
-    { "glCullFace", (void *)glCullFace },
-    { "glFrontFace", (void *)glFrontFace },
-    { "glPolygonMode", (void *)glPolygonMode },
-    { "glPolygonOffset", (void *)glPolygonOffset },
-    { "glColorMask", (void *)glColorMask },
-    { "glLineWidth", (void *)glLineWidth },
-    { "glPointSize", (void *)glPointSize },
-    { "glShadeModel", (void *)glShadeModel },
-    { "glHint", (void *)glHint },
-    { "glPixelStorei", (void *)glPixelStorei },
-    { "glFlush", (void *)glFlush },
-    { "glFinish", (void *)glFinish },
-    { "glGetError", (void *)glGetError },
-    { "glGetString", (void *)glGetString },
-    { "glGetIntegerv", (void *)glGetIntegerv },
-    { "glGetFloatv", (void *)glGetFloatv },
-    { "glGetDoublev", (void *)glGetDoublev },
-    { "glGetBooleanv", (void *)glGetBooleanv },
-    { "glReadPixels", (void *)glReadPixels },
-    { "glMatrixMode", (void *)glMatrixMode },
-    { "glLoadIdentity", (void *)glLoadIdentity },
-    { "glLoadMatrixf", (void *)glLoadMatrixf },
-    { "glLoadMatrixd", (void *)glLoadMatrixd },
-    { "glMultMatrixf", (void *)glMultMatrixf },
-    { "glMultMatrixd", (void *)glMultMatrixd },
-    { "glPushMatrix", (void *)glPushMatrix },
-    { "glPopMatrix", (void *)glPopMatrix },
-    { "glTranslatef", (void *)glTranslatef },
-    { "glTranslated", (void *)glTranslated },
-    { "glRotatef", (void *)glRotatef },
-    { "glRotated", (void *)glRotated },
-    { "glScalef", (void *)glScalef },
-    { "glScaled", (void *)glScaled },
-    { "glFrustum", (void *)glFrustum },
-    { "glOrtho", (void *)glOrtho },
-    { "glBegin", (void *)glBegin },
-    { "glEnd", (void *)glEnd },
-    { "glVertex2f", (void *)glVertex2f },
-    { "glVertex2i", (void *)glVertex2i },
-    { "glVertex3f", (void *)glVertex3f },
-    { "glVertex3fv", (void *)glVertex3fv },
-    { "glVertex3d", (void *)glVertex3d },
-    { "glVertex4f", (void *)glVertex4f },
-    { "glColor3f", (void *)glColor3f },
-    { "glColor3fv", (void *)glColor3fv },
-    { "glColor4f", (void *)glColor4f },
-    { "glColor4fv", (void *)glColor4fv },
-    { "glColor3ub", (void *)glColor3ub },
-    { "glColor4ub", (void *)glColor4ub },
-    { "glNormal3f", (void *)glNormal3f },
-    { "glNormal3fv", (void *)glNormal3fv },
-    { "glTexCoord2f", (void *)glTexCoord2f },
-    { "glTexCoord2fv", (void *)glTexCoord2fv },
-    { "glLightfv", (void *)glLightfv },
-    { "glLightf", (void *)glLightf },
-    { "glLightModelfv", (void *)glLightModelfv },
-    { "glLightModeli", (void *)glLightModeli },
-    { "glMaterialfv", (void *)glMaterialfv },
-    { "glMaterialf", (void *)glMaterialf },
-    { "glColorMaterial", (void *)glColorMaterial },
-    { "glTexEnvi", (void *)glTexEnvi },
-    { "glTexEnvf", (void *)glTexEnvf },
-    { "glEnableClientState", (void *)glEnableClientState },
-    { "glDisableClientState", (void *)glDisableClientState },
-    { "glVertexPointer", (void *)glVertexPointer },
-    { "glNormalPointer", (void *)glNormalPointer },
-    { "glColorPointer", (void *)glColorPointer },
-    { "glTexCoordPointer", (void *)glTexCoordPointer },
-    { "glGenTextures", (void *)glGenTextures },
-    { "glDeleteTextures", (void *)glDeleteTextures },
-    { "glBindTexture", (void *)glBindTexture },
-    { "glIsTexture", (void *)glIsTexture },
-    { "glActiveTexture", (void *)glActiveTexture },
-    { "glTexImage2D", (void *)glTexImage2D },
-    { "glTexSubImage2D", (void *)glTexSubImage2D },
-    { "glTexParameteri", (void *)glTexParameteri },
-    { "glTexParameterf", (void *)glTexParameterf },
-    { "glGenerateMipmap", (void *)glGenerateMipmap },
-    { "glCopyTexSubImage2D", (void *)glCopyTexSubImage2D },
-    { "glGenFramebuffers", (void *)glGenFramebuffers },
-    { "glDeleteFramebuffers", (void *)glDeleteFramebuffers },
-    { "glBindFramebuffer", (void *)glBindFramebuffer },
-    { "glFramebufferTexture2D", (void *)glFramebufferTexture2D },
-    { "glCheckFramebufferStatus", (void *)glCheckFramebufferStatus },
-    { "glIsFramebuffer", (void *)glIsFramebuffer },
+#include "procs.inc"
+    /* the EXT and ARB spellings of what became core */
     { "glGenFramebuffersEXT", (void *)glGenFramebuffers },
     { "glDeleteFramebuffersEXT", (void *)glDeleteFramebuffers },
     { "glBindFramebufferEXT", (void *)glBindFramebuffer },
     { "glFramebufferTexture2DEXT", (void *)glFramebufferTexture2D },
     { "glCheckFramebufferStatusEXT", (void *)glCheckFramebufferStatus },
-    { "glClipPlane", (void *)glClipPlane },
-    { "glTexEnvfv", (void *)glTexEnvfv },
-    { "glClientActiveTexture", (void *)glClientActiveTexture },
-    { "glGenBuffers", (void *)glGenBuffers },
-    { "glDeleteBuffers", (void *)glDeleteBuffers },
-    { "glBindBuffer", (void *)glBindBuffer },
-    { "glBufferData", (void *)glBufferData },
-    { "glBufferSubData", (void *)glBufferSubData },
-    { "glCreateShader", (void *)glCreateShader },
-    { "glDeleteShader", (void *)glDeleteShader },
-    { "glShaderSource", (void *)glShaderSource },
-    { "glCompileShader", (void *)glCompileShader },
-    { "glGetShaderiv", (void *)glGetShaderiv },
-    { "glGetShaderInfoLog", (void *)glGetShaderInfoLog },
-    { "glCreateProgram", (void *)glCreateProgram },
-    { "glDeleteProgram", (void *)glDeleteProgram },
-    { "glAttachShader", (void *)glAttachShader },
-    { "glDetachShader", (void *)glDetachShader },
-    { "glLinkProgram", (void *)glLinkProgram },
-    { "glUseProgram", (void *)glUseProgram },
-    { "glGetProgramiv", (void *)glGetProgramiv },
-    { "glGetProgramInfoLog", (void *)glGetProgramInfoLog },
-    { "glValidateProgram", (void *)glValidateProgram },
-    { "glGetAttribLocation", (void *)glGetAttribLocation },
-    { "glBindAttribLocation", (void *)glBindAttribLocation },
-    { "glGetUniformLocation", (void *)glGetUniformLocation },
-    { "glUniform1f", (void *)glUniform1f },
-    { "glUniform2f", (void *)glUniform2f },
-    { "glUniform3f", (void *)glUniform3f },
-    { "glUniform4f", (void *)glUniform4f },
-    { "glUniform1i", (void *)glUniform1i },
-    { "glUniform2i", (void *)glUniform2i },
-    { "glUniform3i", (void *)glUniform3i },
-    { "glUniform4i", (void *)glUniform4i },
-    { "glUniform1fv", (void *)glUniform1fv },
-    { "glUniform2fv", (void *)glUniform2fv },
-    { "glUniform3fv", (void *)glUniform3fv },
-    { "glUniform4fv", (void *)glUniform4fv },
-    { "glUniform1iv", (void *)glUniform1iv },
-    { "glUniformMatrix2fv", (void *)glUniformMatrix2fv },
-    { "glUniformMatrix3fv", (void *)glUniformMatrix3fv },
-    { "glUniformMatrix4fv", (void *)glUniformMatrix4fv },
-    { "glVertexAttribPointer", (void *)glVertexAttribPointer },
-    { "glEnableVertexAttribArray", (void *)glEnableVertexAttribArray },
-    { "glDisableVertexAttribArray", (void *)glDisableVertexAttribArray },
-    { "glVertexAttrib1f", (void *)glVertexAttrib1f },
-    { "glVertexAttrib2f", (void *)glVertexAttrib2f },
-    { "glVertexAttrib3f", (void *)glVertexAttrib3f },
-    { "glVertexAttrib4f", (void *)glVertexAttrib4f },
-    { "glVertexAttrib4fv", (void *)glVertexAttrib4fv },
-    { "glDrawArrays", (void *)glDrawArrays },
-    { "glDrawElements", (void *)glDrawElements },
+    { "glGenRenderbuffersEXT", (void *)glGenRenderbuffers },
+    { "glDeleteRenderbuffersEXT", (void *)glDeleteRenderbuffers },
+    { "glBindRenderbufferEXT", (void *)glBindRenderbuffer },
+    { "glRenderbufferStorageEXT", (void *)glRenderbufferStorage },
+    { "glFramebufferRenderbufferEXT", (void *)glFramebufferRenderbuffer },
+    { "glGenerateMipmapEXT", (void *)glGenerateMipmap },
+    { "glBlitFramebufferEXT", (void *)glBlitFramebuffer },
+    { "glRenderbufferStorageMultisampleEXT", (void *)glRenderbufferStorageMultisample },
+    { "glGenVertexArraysAPPLE", (void *)glGenVertexArrays },
+    { "glBindVertexArrayAPPLE", (void *)glBindVertexArray },
+    { "glDeleteVertexArraysAPPLE", (void *)glDeleteVertexArrays },
+    { "glVertexAttribDivisorARB", (void *)glVertexAttribDivisor },
+    { "glDrawArraysInstancedARB", (void *)glDrawArraysInstanced },
+    { "glDrawElementsInstancedARB", (void *)glDrawElementsInstanced },
+    { "glBindFragDataLocationEXT", (void *)glBindFragDataLocation },
 };
 
 void *sic_gl_proc(const char *name)

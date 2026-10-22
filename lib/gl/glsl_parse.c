@@ -325,6 +325,7 @@ static struct tspec *type_spec(struct glc *c)
 
 /* qualifiers before a declaration: the Q_* bits, and layout(location/binding) */
 static int layout_index;        /* layout(index = n) of the declaration being parsed */
+static int layout_row_major;    /* layout(row_major) seen */
 
 static int qualifiers(struct glc *c, int *location, int *binding, int *block_layout)
 {
@@ -349,6 +350,7 @@ static int qualifiers(struct glc *c, int *location, int *binding, int *block_lay
                 if (!strcmp(k, "location")) *location = v;
                 else if (!strcmp(k, "binding")) *binding = v;
                 else if (!strcmp(k, "index")) layout_index = v;
+                else if (!strcmp(k, "row_major")) layout_row_major = 1;
                 else if (block_layout && (!strcmp(k, "std140") || !strcmp(k, "shared") || !strcmp(k, "packed") || !strcmp(k, "std430"))) *block_layout = 1;
                 /* row_major, column_major, origin_upper_left, pixel_center_integer, index: accepted */
                 if (!accept(c, ",")) break;
@@ -566,6 +568,7 @@ static void external(struct glc *c)
         return;
     }
     int loc, bind, block_layout = 0;
+    layout_row_major = 0;
     int q = qualifiers(c, &loc, &bind, &block_layout);
     if (is(c, ";")) {                   /* layout(std140) uniform; */
         adv(c);
@@ -578,6 +581,8 @@ static void external(struct glc *c)
         struct gdecl *d = add_decl(c);
         d->k = G_BLOCK;
         d->quals = q;
+        d->binding = bind;
+        d->row_major = layout_row_major;
         d->block_name = ident(c, "a block name");
         expect(c, "{");
         struct tspec *ts = ar_alloc(c, sizeof *ts);
@@ -586,7 +591,9 @@ static void external(struct glc *c)
         while (!is(c, "}")) {
             if (cur(c)->kind == TK_EOF) glc_error(c, "unterminated block");
             int l2, b2;
+            layout_row_major = 0;
             qualifiers(c, &l2, &b2, &block_layout);
+            if (layout_row_major) d->row_major = 1;
             nl_push(c, &m, struct_member_decl(c));
         }
         expect(c, "}");
